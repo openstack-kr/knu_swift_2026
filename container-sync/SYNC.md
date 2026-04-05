@@ -11,9 +11,7 @@
 
 ## 목표
 
-`swift/container/sync.py`의 container sync 성능을 개선하기 위해
-`swift/container/sync_parallelized.py`에 제한된 row 단위 병렬 처리를
-추가했습니다.
+`swift/container/sync.py`의 container sync 성능을 개선하기 위해 row 단위 병렬 처리를 추가했습니다.
 
 다만 원래 `sync.py`가 가지던 sync point 동작은 가능한 한 그대로
 유지하는 것을 목표로 했습니다.
@@ -21,15 +19,8 @@
 ## 관련 파일
 
 - `swift/container/sync.py`
-- `swift/container/sync_parallelized.py`
-- `test/unit/container/test_sync_parallelized.py`
 
 ## 진입점 동작
-
-이제 `swift/container/sync.py`는
-`swift/container/sync_parallelized.py` 파일이 존재하는지 먼저 확인합니다.
-
-파일이 존재하면 다음 순서로 동작합니다.
 
 - `execute sync_parallelized.py` 문장을 출력합니다.
 - `swift.container.sync_parallelized`를 import 합니다.

@@ -40,7 +40,9 @@ from swift.common.swob import normalize_etag
 from swift.common.utils import (
     clean_content_type, config_true_value,
     FileLikeIter, get_logger, hash_path, quote, validate_sync_to,
+    # 추가된 부분 시작: row 단위 병렬 실행을 위해 ContextPool import
     whataremyips, Timestamp, decode_timestamps, parse_options, ContextPool)
+    # 추가된 부분 끝: row 단위 병렬 실행을 위해 ContextPool import
 from swift.common.daemon import Daemon
 from swift.common.http import HTTP_UNAUTHORIZED, HTTP_NOT_FOUND, HTTP_CONFLICT
 from swift.common.wsgi import ConfigString
@@ -201,11 +203,13 @@ class ContainerSync(Daemon):
         swift.common.db.DB_PREALLOCATION = \
             config_true_value(conf.get('db_preallocation', 'f'))
         self.conn_timeout = float(conf.get('conn_timeout', 5))
+        # 추가된 부분 시작: row 병렬 처리 관련 설정값 추가
         self.sync_row_concurrency = max(
             1, int(conf.get('sync_row_concurrency') or 8))
         self.sync_row_batch_size = max(
             1, int(conf.get('sync_row_batch_size') or
-                   self.sync_row_concurrency))
+                   self.sync_row_concurrency * 3))
+        # 추가된 부분 끝: row 병렬 처리 관련 설정값 추가
         request_tries = int(conf.get('request_tries') or 3)
 
         internal_client_conf_path = conf.get('internal_client_conf_path')
@@ -308,6 +312,7 @@ class ContainerSync(Daemon):
                           'point2': sync_point2,
                           'total': max_row})
 
+    # 추가된 부분 시작: row 조회/실행을 배치 및 병렬 단위로 처리하는 헬퍼 추가
     def _get_row_batch(self, broker, sync_point, stop_sync_point=None):
         rows = broker.get_items_since(sync_point, self.sync_row_batch_size)
         if stop_sync_point is not None:
@@ -338,6 +343,7 @@ class ContainerSync(Daemon):
         key = hash_path(info['account'], info['container'],
                         row['name'], raw_digest=True)
         return unpack_from('>I', key)[0] % len(nodes) == ordinal
+    # 추가된 부분 끝: row 조회/실행을 배치 및 병렬 단위로 처리하는 헬퍼 추가
 
     def container_sync(self, path):
         """
@@ -409,6 +415,7 @@ class ContainerSync(Daemon):
                 sync_stage_time = start_at
                 try:
                     while time() < stop_at and sync_point2 < sync_point1:
+                        # 추가된 부분 시작: 누락 row 재동기화 구간을 단건 처리에서 배치 병렬 처리로 변경
                         rows = self._get_row_batch(
                             broker, sync_point2, sync_point1)
                         if not rows:
@@ -431,6 +438,7 @@ class ContainerSync(Daemon):
                             broker.set_x_container_sync_points(
                                 None, sync_point2)
                             last_success_point = sync_point2
+                        # 추가된 부분 끝: 누락 row 재동기화 구간을 단건 처리에서 배치 병렬 처리로 변경
                     if next_sync_point:
                         broker.set_x_container_sync_points(None,
                                                            next_sync_point)
@@ -438,6 +446,7 @@ class ContainerSync(Daemon):
                         next_sync_point = sync_point2
                     sync_stage_time = time()
                     while sync_stage_time < stop_at:
+                        # 추가된 부분 시작: 신규 row 처리 구간을 담당 row 선별 후 배치 병렬 처리로 변경
                         rows = self._get_row_batch(broker, sync_point1)
                         if not rows:
                             break
@@ -457,6 +466,7 @@ class ContainerSync(Daemon):
                         self._run_row_batch(
                             rows_to_sync, sync_to, user_key, broker, info,
                             realm, realm_key)
+                        # 추가된 부분 끝: 신규 row 처리 구간을 담당 row 선별 후 배치 병렬 처리로 변경
                         sync_stage_time = time()
                     self.container_syncs += 1
                     self.logger.increment('syncs')
@@ -696,7 +706,6 @@ class ContainerSync(Daemon):
 def main():
     conf_file, options = parse_options(once=True)
     run_daemon(ContainerSync, conf_file, **options)
-
 
 if __name__ == '__main__':
     main()
