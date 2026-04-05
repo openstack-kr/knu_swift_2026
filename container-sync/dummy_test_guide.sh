@@ -45,7 +45,6 @@ for i in $(seq -w 1 $N_CONTAINER); do
 done
 
 # src서버: object 업로드
-tmpfile=/tmp/dummy1b.txt
 printf 'a' > "$tmpfile"
 for i in $(seq -w 1 $N_CONTAINER); do
   for j in $(seq -w 1 $N_OBJECT); do
