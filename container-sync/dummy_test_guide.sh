@@ -1,6 +1,9 @@
+# 각 서버 터미널에서 순서에 맞게 입력
+
 # src 서버: 데몬 정지
 swift-init container-sync stop
 # 필요하면 이것도 pkill -9 -f swift-container-sync
+
 # ===== src, dst 서버 공통 설정 =====
 N_CONTAINER=10
 N_OBJECT=100
@@ -38,12 +41,6 @@ for i in $(seq -w 1 $N_CONTAINER); do
     "$SRC_PREFIX-$i"
 done
 
-# dst서버에서 각 컨테이너 비어있는지 확인
-for i in $(seq -w 1 $N_CONTAINER); do
-  count=$(swift -A "$AUTH_URL" -U "$USER" -K "$KEY" list "$DST_PREFIX-$i" | wc -l)
-  echo "$DST_PREFIX-$i : $count"
-done
-
 # src서버: object 업로드
 printf 'a' > "$tmpfile"
 for i in $(seq -w 1 $N_CONTAINER); do
@@ -52,6 +49,13 @@ for i in $(seq -w 1 $N_CONTAINER); do
       "$SRC_PREFIX-$i" "$tmpfile" --object-name "obj-$j"
   done
 done
+
+# dst서버: 각 컨테이너 비어있는지 확인
+for i in $(seq -w 1 $N_CONTAINER); do
+  count=$(swift -A "$AUTH_URL" -U "$USER" -K "$KEY" list "$DST_PREFIX-$i" | wc -l)
+  echo "$DST_PREFIX-$i : $count"
+done
+
 # src 서버: sync 실행
 time sudo swift-init container-sync once
 
