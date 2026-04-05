@@ -15,6 +15,10 @@ ls /srv/2/node
 ls /srv/3/node
 ls /srv/4/node
 
+# **초기화 해야하는 경우에만** 캐시 / 런타임 파일 정리
+sudo find /var/cache/swift -mindepth 1 -delete
+sudo find /var/run/swift -mindepth 1 -delete 2>/dev/null
+
 # **초기화 해야하는 경우에만** 이전에 돌린 경우: /srv/*/node 아래의 Swift storage 디렉토리 복구
 sudo mkdir -p /srv/1/node/sdb1 /srv/1/node/sdb5
 sudo mkdir -p /srv/2/node/sdb2 /srv/2/node/sdb6
