@@ -1,6 +1,6 @@
 # 각 서버 터미널에서 순서에 맞게 입력
 
-# src 서버: 데몬 정지
+# src 서버, dst 서버: 데몬 정지
 swift-init container-sync stop
 # 필요하면 이것도 pkill -9 -f swift-container-sync
 
