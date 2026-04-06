@@ -22,6 +22,7 @@ from random import choice, random
 from struct import unpack_from
 
 from eventlet import sleep, Timeout
+from eventlet.greenpool import GreenPool
 from urllib.parse import urlparse
 
 import swift.common.db
@@ -201,6 +202,9 @@ class ContainerSync(Daemon):
         swift.common.db.DB_PREALLOCATION = \
             config_true_value(conf.get('db_preallocation', 'f'))
         self.conn_timeout = float(conf.get('conn_timeout', 5))
+        self.batch_size = int(conf.get('batch_size', 24))
+        # Added: process each batch with a small green worker pool.
+        self.batch_workers = int(conf.get('batch_workers', 8))
         request_tries = int(conf.get('request_tries') or 3)
 
         internal_client_conf_path = conf.get('internal_client_conf_path')
@@ -303,6 +307,40 @@ class ContainerSync(Daemon):
                           'point2': sync_point2,
                           'total': max_row})
 
+    def _get_batch_rows(self, broker, start_rowid, limit_rowid):
+        rows = broker.get_items_since(start_rowid, self.batch_size)
+        result = []
+        for row in rows:
+            if row['ROWID'] > limit_rowid:
+                break
+            result.append(row)
+        return result
+
+    def _sync_batch_rows(self, batch, sync_to, user_key, broker, info,
+                         realm, realm_key):
+        # Added: run sync of rows in a batch concurrently with up to
+        # self.batch_workers green workers.
+        pool = GreenPool(self.batch_workers)
+        return list(pool.imap(
+            lambda row: self.container_sync_row(
+                row, sync_to, user_key, broker, info, realm, realm_key),
+            batch))
+
+    def _sync_selected_batch_rows(self, batch, sync_to, user_key, broker, info,
+                                  realm, realm_key, nodes, ordinal):
+        # Added: only rows assigned to this node are synced, but the
+        # selected rows are processed concurrently inside the batch.
+        selected = []
+        for row in batch:
+            key = hash_path(info['account'], info['container'],
+                            row['name'], raw_digest=True)
+            if unpack_from('>I', key)[0] % len(nodes) == ordinal:
+                selected.append(row)
+        if not selected:
+            return
+        self._sync_batch_rows(selected, sync_to, user_key, broker, info,
+                              realm, realm_key)
+
     def container_sync(self, path):
         """
         Checks the given path for a container database, determines if syncing
@@ -373,26 +411,26 @@ class ContainerSync(Daemon):
                 sync_stage_time = start_at
                 try:
                     while time() < stop_at and sync_point2 < sync_point1:
-                        rows = broker.get_items_since(sync_point2, 1)
-                        if not rows:
+                        batch = self._get_batch_rows(
+                            broker, sync_point2, sync_point1)
+                        if not batch:
                             break
-                        row = rows[0]
-                        if row['ROWID'] > sync_point1:
-                            break
-                        # This node will only initially sync out one third
-                        # of the objects (if 3 replicas, 1/4 if 4, etc.)
-                        # and will skip problematic rows as needed in case of
-                        # faults.
-                        # This section will attempt to sync previously skipped
-                        # rows in case the previous attempts by any of the
-                        # nodes didn't succeed.
-                        if not self.container_sync_row(
-                                row, sync_to, user_key, broker, info, realm,
-                                realm_key):
-                            if not next_sync_point:
-                                next_sync_point = sync_point2
-                        sync_point2 = row['ROWID']
+
+                        # Added: old rows are still handled in the original
+                        # batch flow, but rows inside the batch are synced
+                        # concurrently with 4 green workers.
+                        results = self._sync_batch_rows(
+                            batch, sync_to, user_key, broker, info,
+                            realm, realm_key)
+
+                        for row, ok in zip(batch, results):
+                            if not ok:
+                                if next_sync_point is None:
+                                    next_sync_point = sync_point2
+                            sync_point2 = row['ROWID']
+
                         broker.set_x_container_sync_points(None, sync_point2)
+
                     if next_sync_point:
                         broker.set_x_container_sync_points(None,
                                                            next_sync_point)
@@ -400,24 +438,20 @@ class ContainerSync(Daemon):
                         next_sync_point = sync_point2
                     sync_stage_time = time()
                     while sync_stage_time < stop_at:
-                        rows = broker.get_items_since(sync_point1, 1)
-                        if not rows:
+                        batch = broker.get_items_since(sync_point1,
+                                                       self.batch_size)
+                        if not batch:
                             break
-                        row = rows[0]
-                        key = hash_path(info['account'], info['container'],
-                                        row['name'], raw_digest=True)
-                        # This node will only initially sync out one third of
-                        # the objects (if 3 replicas, 1/4 if 4, etc.).
-                        # It'll come back around to the section above
-                        # and attempt to sync previously skipped rows in case
-                        # the other nodes didn't succeed or in case it failed
-                        # to do so the first time.
-                        if unpack_from('>I', key)[0] % \
-                                len(nodes) == ordinal:
-                            self.container_sync_row(
-                                row, sync_to, user_key, broker, info, realm,
-                                realm_key)
-                        sync_point1 = row['ROWID']
+                        # Added: new rows keep the original ordinal-based
+                        # ownership rule, but selected rows are processed
+                        # concurrently inside the batch.
+                        self._sync_selected_batch_rows(
+                            batch, sync_to, user_key, broker, info,
+                            realm, realm_key, nodes, ordinal)
+
+                        for row in batch:
+                            sync_point1 = row['ROWID']
+
                         broker.set_x_container_sync_points(sync_point1, None)
                         sync_stage_time = time()
                     self.container_syncs += 1
