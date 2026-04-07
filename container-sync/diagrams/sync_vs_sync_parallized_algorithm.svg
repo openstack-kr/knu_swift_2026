@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1080" viewBox="0 0 1700 1080">
+  <defs>
+    <style>
+      .bg { fill: #f5f3ef; }
+      .panel { fill: #fffdf8; stroke: #1f2937; stroke-width: 2; rx: 22; ry: 22; }
+      .title { font: 700 36px sans-serif; fill: #111827; }
+      .subtitle { font: 500 18px sans-serif; fill: #4b5563; }
+      .section { font: 700 25px sans-serif; fill: #111827; }
+      .label { font: 700 19px sans-serif; fill: #111827; }
+      .small { font: 500 15px sans-serif; fill: #374151; }
+      .small-strong { font: 700 15px sans-serif; fill: #1f2937; }
+      .box { fill: #ffffff; stroke: #334155; stroke-width: 2; rx: 16; ry: 16; }
+      .box-blue { fill: #dbeafe; stroke: #1d4ed8; stroke-width: 2; rx: 16; ry: 16; }
+      .box-green { fill: #dcfce7; stroke: #15803d; stroke-width: 2; rx: 16; ry: 16; }
+      .box-orange { fill: #ffedd5; stroke: #c2410c; stroke-width: 2; rx: 16; ry: 16; }
+      .box-purple { fill: #f3e8ff; stroke: #7e22ce; stroke-width: 2; rx: 16; ry: 16; }
+      .box-yellow { fill: #fef3c7; stroke: #b45309; stroke-width: 2; rx: 16; ry: 16; }
+      .line { stroke: #475569; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #1d4ed8; stroke-width: 3; fill: none; marker-end: url(#arrowBlue); }
+      .line-purple { stroke: #7e22ce; stroke-width: 3; stroke-dasharray: 12 8; fill: none; marker-end: url(#arrowPurple); }
+      .callout { fill: #ecfdf5; stroke: #16a34a; stroke-width: 2; rx: 18; ry: 18; }
+      .callout-warn { fill: #fff7ed; stroke: #ea580c; stroke-width: 2; rx: 18; ry: 18; }
+      .note { font: 700 18px sans-serif; fill: #14532d; }
+      .warn { font: 700 18px sans-serif; fill: #9a3412; }
+      .badge { fill: #111827; rx: 12; ry: 12; }
+      .badge-text { font: 700 14px sans-serif; fill: #ffffff; }
+    </style>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="14" markerHeight="14" refX="11" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#1d4ed8"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="14" markerHeight="14" refX="11" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#7e22ce"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1700" height="1080"/>
+
+  <text class="title" x="64" y="64">sync.py vs sync_parallized.py</text>
+  <text class="subtitle" x="64" y="98">원본은 row 단위 순차 처리이고, sync_parallized.py는 batch 조회 + pending queue + batch 단위 sync point flush + HEAD timing 계측을 추가한 버전이다.</text>
+
+  <rect class="panel" x="48" y="136" width="700" height="760"/>
+  <rect class="panel" x="782" y="136" width="870" height="760"/>
+
+  <text class="section" x="80" y="180">기준: sync.py</text>
+  <text class="section" x="814" y="180">변경: sync_parallized.py</text>
+
+  <rect class="box" x="88" y="214" width="620" height="76"/>
+  <text class="label" x="114" y="258">1. row 1개 조회</text>
+  <text class="small" x="270" y="258">get_items_since(sync_point, 1)</text>
+
+  <rect class="box" x="88" y="334" width="620" height="112"/>
+  <text class="label" x="114" y="372">2. row 1개 처리</text>
+  <text class="small" x="114" y="400">container_sync_row(row)</text>
+  <text class="small" x="114" y="426">remote HEAD → source GET → remote PUT or DELETE</text>
+
+  <rect class="box-orange" x="88" y="490" width="620" height="104"/>
+  <text class="label" x="114" y="528">3. 처리 직후 sync point DB write</text>
+  <text class="small" x="114" y="556">broker.set_x_container_sync_points(...)</text>
+  <text class="small" x="114" y="580">row마다 1번씩 갱신</text>
+
+  <rect class="box" x="88" y="638" width="620" height="80"/>
+  <text class="label" x="114" y="678">4. 다음 row 조회</text>
+  <text class="small" x="270" y="678">루프 전체가 순차</text>
+
+  <path class="line" d="M398 290 L398 334"/>
+  <path class="line" d="M398 446 L398 490"/>
+  <path class="line" d="M398 594 L398 638"/>
+
+  <rect class="callout-warn" x="104" y="756" width="590" height="118"/>
+  <text class="warn" x="130" y="794">원본 특징</text>
+  <text class="small" x="130" y="822">- 구현은 단순하지만 I/O wait를 겹치지 못함</text>
+  <text class="small" x="130" y="846">- sync point는 촘촘하게 기록되지만 DB write가 많음</text>
+
+  <rect class="box-blue" x="822" y="214" width="790" height="86"/>
+  <text class="label" x="848" y="252">1. batch 조회 헬퍼 도입</text>
+  <text class="small" x="848" y="278">_get_row_batch(..., sync_row_batch_size)로 row 묶음을 가져옴</text>
+
+  <rect class="box-green" x="822" y="344" width="790" height="112"/>
+  <text class="label" x="848" y="382">2. batch 내부 병렬 + pending queue 유지</text>
+  <text class="small" x="848" y="410">ContextPool worker에 row를 push하고 pending_missing / pending_new에 보관</text>
+  <text class="small" x="848" y="436">worker 슬롯이 차면 가장 오래된 task부터 wait</text>
+
+  <rect class="box-purple" x="822" y="500" width="790" height="116"/>
+  <text class="label" x="848" y="538">3. batch 간에도 처리 이어감</text>
+  <text class="small" x="848" y="566">현재 pending row가 실행되는 동안 다음 batch row를 계속 fetch</text>
+  <text class="small" x="848" y="592">즉 v1과 달리 batch 전체 종료를 항상 기다리지 않음</text>
+
+  <rect class="box-orange" x="822" y="660" width="790" height="124"/>
+  <text class="label" x="848" y="698">4. sync point DB write를 flush 단위로 축소</text>
+  <text class="small" x="848" y="726">missing_rows_since_flush를 세고 batch 끝 또는 drain 시점에만 갱신</text>
+  <text class="small" x="848" y="752">신규 row 구간도 batch 끝에서 sync_point1 갱신</text>
+
+  <rect class="box-yellow" x="822" y="828" width="790" height="88"/>
+  <text class="label" x="848" y="866">5. HEAD timing 계측 추가</text>
+  <text class="small" x="848" y="892">_object_in_remote_container()에서 head.timing과 slow HEAD log 기록</text>
+
+  <path class="line" d="M1218 300 L1218 344"/>
+  <path class="line" d="M1218 456 L1218 500"/>
+  <path class="line" d="M1218 616 L1218 660"/>
+  <path class="line" d="M1218 784 L1218 828"/>
+
+  <rect class="badge" x="730" y="250" width="92" height="34"/>
+  <text class="badge-text" x="752" y="273">차이 A</text>
+  <path class="line-blue" d="M708 252 L822 252"/>
+
+  <rect class="badge" x="730" y="550" width="92" height="34"/>
+  <text class="badge-text" x="752" y="573">차이 B</text>
+  <path class="line-purple" d="M708 540 L822 560"/>
+
+  <rect class="callout" x="782" y="938" width="870" height="92"/>
+  <text class="note" x="808" y="976">핵심 해석</text>
+  <text class="small-strong" x="808" y="1004">sync_parallized.py는 row 순차 루프를 batch+pipeline 구조로 바꾸고 DB write 빈도를 줄였지만, 실제 무거운 일은 여전히 container_sync_row() 내부의 remote HEAD / GET / PUT(or DELETE) 네트워크 왕복이다.</text>
+
+  <rect class="panel" x="48" y="938" width="700" height="92"/>
+  <text class="section" x="78" y="976">한 줄 비교</text>
+  <text class="small-strong" x="78" y="1004">sync.py는 단순한 row-by-row 처리, sync_parallized.py는 더 높은 처리량을 노리는 batch/pending/flush 구조다.</text>
+</svg>
