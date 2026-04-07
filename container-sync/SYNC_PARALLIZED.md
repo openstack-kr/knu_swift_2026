@@ -5,7 +5,7 @@
 - `sync_parallized.py`
 
 다이어그램:
-- `diagrams/sync_vs_sync_parallized_algorithm.svg`
+- <img width="1700" height="1080" alt="image" src="https://github.com/user-attachments/assets/3aa57ea4-15c7-4082-9e9d-5b8a31fe8ece" />
 
 ## 목표
 
