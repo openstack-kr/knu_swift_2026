@@ -1,8 +1,8 @@
-# sync_parallized.py 요약
+# sync_parallel 요약
 
 대상 파일:
 - `sync.py`
-- `sync_parallized.py`
+- `sync_parallel.py`
 
 다이어그램:
 - <img width="1700" height="1080" alt="image" src="https://github.com/user-attachments/assets/3aa57ea4-15c7-4082-9e9d-5b8a31fe8ece" />
@@ -10,7 +10,7 @@
 ## 목표
 
 `sync.py`의 row-by-row 순차 처리 대신,
-`sync_parallized.py`는 row를 묶어 더 많은 network I/O를 겹치게 하는 것이 목표
+parallel 버전은 row를 묶어 더 많은 network I/O를 겹치게 하는 것이 목표
 
 ## 핵심 변경
 
@@ -39,7 +39,7 @@
 - sync point 즉시 갱신
 - 전체가 순차
 
-`sync_parallized.py`
+parallel 버전
 - batch 조회
 - 여러 row 동시 처리
 - pending queue로 batch 간도 이어서 처리
@@ -57,8 +57,3 @@
 - 주 병목은 여전히 network/I/O wait
 - 같은 object에 대한 여러 row가 더 많이 겹칠 수 있음
 - `InternalClient`를 여러 greenlet이 함께 쓰므로 client 레벨 병목 가능성은 남아 있음
-
-## 검증
-
-- `python3 -m py_compile swift/container/sync_parallelized.py`
-- `python3 -m unittest test.unit.container.test_sync_parallelized`
