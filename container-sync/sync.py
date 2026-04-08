@@ -41,8 +41,10 @@ from swift.common.swob import normalize_etag
 from swift.common.utils import (
     clean_content_type, config_true_value,
     FileLikeIter, get_logger, hash_path, quote, validate_sync_to,
-    whataremyips, Timestamp, decode_timestamps, parse_options)
+    whataremyips, Timestamp, decode_timestamps, parse_options,
+    md5) #determnistic leader 계산하기 위해 추가
 from swift.common.daemon import Daemon
+from swift.common.memcached import load_memcache #old rows lease 저장소(memcache)사용을 위해
 from swift.common.http import HTTP_UNAUTHORIZED, HTTP_NOT_FOUND, HTTP_CONFLICT
 from swift.common.wsgi import ConfigString
 from swift.common.middleware.versioned_writes.object_versioning import (
@@ -89,11 +91,17 @@ class ContainerSync(Daemon):
     be down.
 
     Two sync points are kept per container database. All rows between the two
-    sync points trigger updates. Any rows newer than both sync points cause
-    updates depending on the node's position for the container (primary nodes
-    do one third, etc. depending on the replica count of course). After a sync
-    run, the first sync point is set to the newest ROWID known and the second
-    sync point is set to newest ROWID for which all updates have been sent.
+    sync points trigger updates. These older rows are handled through a
+    lease-backed leader path so that only one replica performs the expensive
+    re-check work at a time, while other replicas can deterministically take
+    over when the current lease holder disappears. Any rows newer than both
+    sync points continue to be partitioned across primary replicas based on
+    node position for the container. After a sync run, the first sync point is
+    set to the newest ROWID known and the second sync point is set to newest
+    ROWID for which all updates have been sent.
+    ## 오래된 행은 lease-backed leader path로 처리하고 현재 lease holder만 old-row validation을 수행
+    ## lease holder가 안되면 deterministic order의 다음 replica가 넘겨받음
+    ## new row에 대해서는 기본의 방식 유지시킴
 
     An example may help. Assume replica count is 3 and perfectly matching
     ROWIDs starting at 1.
@@ -112,18 +120,18 @@ class ContainerSync(Daemon):
 
        * SyncPoint1 starts as 6.
        * SyncPoint2 starts as -1.
-       * The rows between -1 and 6 all trigger updates (most of which
-         should short-circuit on the remote end as having already been
-         done).
-       * Six more rows newer than SyncPoint1, so a third of the rows are
-         sent by node 1, another third by node 2, remaining third by node
-         3.
+       * The rows between -1 and 6 all trigger updates, but only the current
+         old-row lease holder performs that validation work.
+       * If that replica disappears and its lease expires, the next replica in
+         deterministic order can take over the old-row work.
+       * Six more rows newer than SyncPoint1 are still partitioned across
+         the three primary replicas.
        * SyncPoint1 is set as 12 (the newest ROWID known).
        * SyncPoint2 is set as 6 (the newest "all updates" ROWID).
 
-    In this way, under normal circumstances each node sends its share of
-    updates each run and just sends a batch of older updates to ensure nothing
-    was missed.
+    In this way, under normal circumstances only one node rechecks old rows
+    at a time, while new rows keep the original replica-level partitioning for
+    better throughput and the old-row lease can fail over when a replica dies.
 
     :param conf: The dict of configuration values from the [container-sync]
                  section of the container-server.conf
@@ -203,8 +211,27 @@ class ContainerSync(Daemon):
             config_true_value(conf.get('db_preallocation', 'f'))
         self.conn_timeout = float(conf.get('conn_timeout', 5))
         self.batch_size = int(conf.get('batch_size', 24))
-        # Added: process each batch with a small green worker pool.
         self.batch_workers = int(conf.get('batch_workers', 8))
+
+        """
+        old row들을 제어하기 위한 설정값들 추가
+        """
+        self.old_row_lease_enabled = config_true_value(
+            conf.get('old_row_lease_enabled', 'true')) #lease 기능 끄고 키기
+        self.old_row_lease_ttl = int(conf.get('old_row_lease_ttl', 30)) #lease 만료시간
+        self.old_row_lease_step = float(conf.get('old_row_lease_step', 2.0)) #백업 replica의 대기 간격
+        self.old_row_lease_prefix = conf.get(
+            'old_row_lease_prefix', 'container-sync-old-rows') #memcache key prefix
+        self.old_row_lease_mc = None #memcache client
+        if self.old_row_lease_enabled:
+            try:
+                self.old_row_lease_mc = load_memcache(conf, self.logger)
+            except Exception:
+                self.logger.exception(
+                    'Unable to initialize old-row lease memcache client; '
+                    'falling back to deterministic leader only')
+                self.old_row_lease_mc = None
+
         request_tries = int(conf.get('request_tries') or 3)
 
         internal_client_conf_path = conf.get('internal_client_conf_path')
@@ -230,6 +257,73 @@ class ContainerSync(Daemon):
                 'Unable to load internal client from config: '
                 '%(conf)r (%(error)s)'
                 % {'conf': internal_client_conf_path, 'error': err})
+    #memcache key 생성
+    def _old_row_lease_key(self, info):
+        return '%s/%s/%s' % (self.old_row_lease_prefix,
+                             info['account'], info['container'])
+    #현재 프로세스 owner ID 생성
+    def _old_row_lease_owner(self, ordinal):
+        myip = sorted(self._myips)[0] if self._myips else 'unknown'
+        return '%s:%s:%s:%s' % (myip, self._myport, ordinal, os.getpid())
+    #leader 기준으로 백업 순서 계선
+    def _old_row_lease_rank(self, ordinal, leader_index, replica_count):
+        return (ordinal - leader_index) % replica_count
+    # backup replica가 넘겨받기 시도 전 대기 시간 계산
+    def _old_row_lease_wait(self, start_at, ordinal, leader_index,
+                            replica_count):
+        rank = self._old_row_lease_rank(ordinal, leader_index, replica_count)
+        wait_until = start_at + (rank * self.old_row_lease_step)
+        return max(0, wait_until - time())
+    #lease 획득
+    def _acquire_old_row_lease(self, info, owner):
+        if not self.old_row_lease_mc:
+            return False
+        key = self._old_row_lease_key(info)
+        payload = {'owner': owner,
+                   'expires_at': time() + self.old_row_lease_ttl}
+        try:
+            if self.old_row_lease_mc.add(
+                    key, payload, serialize=True,
+                    time=self.old_row_lease_ttl):
+                return True
+            current = self.old_row_lease_mc.get(key)
+            if current and current.get('owner') == owner:
+                self.old_row_lease_mc.set(
+                    key, payload, serialize=True,
+                    time=self.old_row_lease_ttl)
+                return True
+        except Exception:
+            self.logger.exception('Failed to acquire old-row lease for %s/%s',
+                                  info['account'], info['container'])
+        return False
+    #lease 갱신
+    def _refresh_old_row_lease(self, info, owner):
+        if not self.old_row_lease_mc:
+            return
+        key = self._old_row_lease_key(info)
+        payload = {'owner': owner,
+                   'expires_at': time() + self.old_row_lease_ttl}
+        try:
+            current = self.old_row_lease_mc.get(key)
+            if current and current.get('owner') == owner:
+                self.old_row_lease_mc.set(
+                    key, payload, serialize=True,
+                    time=self.old_row_lease_ttl)
+        except Exception:
+            self.logger.exception('Failed to refresh old-row lease for %s/%s',
+                                  info['account'], info['container'])
+    #lease 해제
+    def _release_old_row_lease(self, info, owner):
+        if not self.old_row_lease_mc:
+            return
+        key = self._old_row_lease_key(info)
+        try:
+            current = self.old_row_lease_mc.get(key)
+            if current and current.get('owner') == owner:
+                self.old_row_lease_mc.delete(key)
+        except Exception:
+            self.logger.exception('Failed to release old-row lease for %s/%s',
+                                  info['account'], info['container'])
 
     def run_forever(self, *args, **kwargs):
         """
@@ -294,7 +388,9 @@ class ContainerSync(Daemon):
                          'bytes: %(bytes)s, '
                          'sync_point1: %(point1)s, '
                          'sync_point2: %(point2)s, '
-                         'total_rows: %(total)s',
+                         #로그에 lease 옵션 여부를 남기도록 수정
+                         'total_rows: %(total)s, '
+                         'lease_enabled: %(lease_enabled)s',
                          {'container': '%s/%s' % (info['account'],
                                                   info['container']),
                           'start': start,
@@ -305,7 +401,8 @@ class ContainerSync(Daemon):
                           'bytes': self.container_stats['bytes'],
                           'point1': sync_point1,
                           'point2': sync_point2,
-                          'total': max_row})
+                          'total': max_row,
+                          'lease_enabled': self.old_row_lease_enabled})
 
     def _get_batch_rows(self, broker, start_rowid, limit_rowid):
         rows = broker.get_items_since(start_rowid, self.batch_size)
@@ -316,9 +413,25 @@ class ContainerSync(Daemon):
             result.append(row)
         return result
 
+    # account/container 해시로 리더 인덱스 계산
+    def _get_leader_index(self, account, container, replica_count):
+        seed = '%s/%s' % (account, container)
+        digest = md5(seed.encode('utf-8'), usedforsecurity=False).digest()
+        return unpack_from('>I', digest)[0] % replica_count
+
+    # local 노드 ordinal이랑 leader index 계산
+    def _local_container_leader(self, info, nodes):
+        for ordinal, node in enumerate(nodes):
+            if is_local_device(self._myips, self._myport,
+                               node['ip'], node['port']):
+                leader_index = self._get_leader_index(
+                    info['account'], info['container'], len(nodes))
+                return ordinal, leader_index
+        return None, None
+
     def _sync_batch_rows(self, batch, sync_to, user_key, broker, info,
                          realm, realm_key):
-        # Added: run sync of rows in a batch concurrently with up to
+        # Run sync of rows in a batch concurrently with up to
         # self.batch_workers green workers.
         pool = GreenPool(self.batch_workers)
         return list(pool.imap(
@@ -328,8 +441,6 @@ class ContainerSync(Daemon):
 
     def _sync_selected_batch_rows(self, batch, sync_to, user_key, broker, info,
                                   realm, realm_key, nodes, ordinal):
-        # Added: only rows assigned to this node are synced, but the
-        # selected rows are processed concurrently inside the batch.
         selected = []
         for row in batch:
             key = hash_path(info['account'], info['container'],
@@ -337,9 +448,11 @@ class ContainerSync(Daemon):
             if unpack_from('>I', key)[0] % len(nodes) == ordinal:
                 selected.append(row)
         if not selected:
-            return
-        self._sync_batch_rows(selected, sync_to, user_key, broker, info,
-                              realm, realm_key)
+            return [], []
+        #기존에는 실행만 하고 결과를 안 넘겼는데, 실제 선택된 row 목록이랑 row 실행 결과 반환하도록 수정
+        results = self._sync_batch_rows(selected, sync_to, user_key, broker,
+                                        info, realm, realm_key)
+        return selected, results
 
     def container_sync(self, path):
         """
@@ -368,12 +481,14 @@ class ContainerSync(Daemon):
 
             x, nodes = self.container_ring.get_nodes(info['account'],
                                                      info['container'])
-            for ordinal, node in enumerate(nodes):
-                if is_local_device(self._myips, self._myport,
-                                   node['ip'], node['port']):
-                    break
-            else:
+            # 기존에는 자신이 primary replica인지만 확인했는데, 이후에는 로컬 ordinal 계산, 현재 replica가 leader인지 판단하고 ID 생성,
+            # old-row lease 상태 변수 준비 등의 기능을 추가
+            ordinal, leader_index = self._local_container_leader(info, nodes)
+            if ordinal is None:
                 return
+            is_leader = (ordinal == leader_index)
+            old_row_lease_owner = self._old_row_lease_owner(ordinal)
+            old_row_lease_held = False
             if broker.metadata.get(SYSMETA_VERSIONS_CONT):
                 self.container_skips += 1
                 self.logger.increment('skips')
@@ -409,19 +524,66 @@ class ContainerSync(Daemon):
                 stop_at = start_at + self.container_time
                 next_sync_point = None
                 sync_stage_time = start_at
+                old_row_lease_waited = False
                 try:
                     while time() < stop_at and sync_point2 < sync_point1:
                         batch = self._get_batch_rows(
                             broker, sync_point2, sync_point1)
                         if not batch:
                             break
+                        """
+                        기존: old row를 replica들이 중복 검사했음.
+                        현재:
+                        - memcache lease가 있으면, lease holder만 old rows를 수행하고, 리더가 시도한 다음 backup
+                          replica는 old_row_lease_step 만큼 늦게 넘겨받기를 시도한다.
+                        - 만약, memcache lease가 없다면 deterministic leader만 오래된 행에 대해 검사하고 리더가 아닌
+                          replica들은 스킵함.
+                        """
+                        if self.old_row_lease_enabled and self.old_row_lease_mc:
+                            if not old_row_lease_held:
+                                wait_for_turn = self._old_row_lease_wait(
+                                    start_at, ordinal, leader_index,
+                                    len(nodes))
+                                if wait_for_turn > 0 and not old_row_lease_waited:
+                                    if time() + wait_for_turn >= stop_at:
+                                        break
+                                    sleep(wait_for_turn)
+                                    old_row_lease_waited = True
+                                old_row_lease_held = self._acquire_old_row_lease(
+                                    info, old_row_lease_owner)
+                            if not old_row_lease_held:
+                                self.container_skips += 1
+                                self.logger.increment('skips')
+                                self.logger.debug(
+                                    'Skipping old rows for %(account)s/%(container)s: '
+                                    'local ordinal %(ordinal)s could not acquire '
+                                    'lease after leader %(leader)s',
+                                    {'account': info['account'],
+                                     'container': info['container'],
+                                     'ordinal': ordinal,
+                                     'leader': leader_index})
+                                break
+                        else:
+                            if not is_leader:
+                                self.container_skips += 1
+                                self.logger.increment('skips')
+                                self.logger.debug(
+                                    'Skipping old rows for %(account)s/%(container)s: '
+                                    'local ordinal %(ordinal)s is not leader %(leader)s',
+                                    {'account': info['account'],
+                                     'container': info['container'],
+                                     'ordinal': ordinal,
+                                     'leader': leader_index})
+                                break
 
-                        # Added: old rows are still handled in the original
-                        # batch flow, but rows inside the batch are synced
-                        # concurrently with 4 green workers.
+                        # Old rows are handled only by the current lease holder,
+                        # but rows inside the batch are processed concurrently.
                         results = self._sync_batch_rows(
                             batch, sync_to, user_key, broker, info,
                             realm, realm_key)
+                        if self.old_row_lease_enabled and self.old_row_lease_mc:
+                            self._refresh_old_row_lease(info,
+                                                        old_row_lease_owner)
 
                         for row, ok in zip(batch, results):
                             if not ok:
@@ -442,21 +604,29 @@ class ContainerSync(Daemon):
                                                        self.batch_size)
                         if not batch:
                             break
-                        # Added: new rows keep the original ordinal-based
-                        # ownership rule, but selected rows are processed
-                        # concurrently inside the batch.
-                        self._sync_selected_batch_rows(
+                        selected, results = self._sync_selected_batch_rows(
                             batch, sync_to, user_key, broker, info,
                             realm, realm_key, nodes, ordinal)
-
-                        for row in batch:
-                            sync_point1 = row['ROWID']
+                        # 선택된 row와 결과를 받아서 실제 성공한 selected row까지만 sp1을 전진하고,
+                        # selected가 아예 없으면 batch 마지막 row까지 전진시킴
+                        if selected:
+                            for row, ok in zip(selected, results):
+                                if ok:
+                                    sync_point1 = row['ROWID']
+                                else:
+                                    break
+                        else:
+                            sync_point1 = batch[-1]['ROWID']
 
                         broker.set_x_container_sync_points(sync_point1, None)
                         sync_stage_time = time()
                     self.container_syncs += 1
                     self.logger.increment('syncs')
+                #old 처리가 끝나면 lease를 release 시켜줌.
                 finally:
+                    if old_row_lease_held:
+                        self._release_old_row_lease(info,
+                                                    old_row_lease_owner)
                     self.container_report(start_at, sync_stage_time,
                                           sync_point1,
                                           next_sync_point,
@@ -545,7 +715,9 @@ class ContainerSync(Daemon):
                            realm, realm_key):
         """
         Sends the update the row indicates to the sync_to container.
-        Update can be either delete or put.
+        Update can be either delete or put. This method may run in parallel
+        within a batch, but sync point updates are committed by the caller
+        in row order.
 
         :param row: The updated row in the local database triggering the sync
                     update.
