@@ -26,9 +26,7 @@ from urllib.parse import urlparse
 
 import swift.common.db
 from swift.common.db import DatabaseConnectionError
-# 추가된 부분 시작: parallel 전용 broker 확장 사용
-from swift.container.backend_parallel import ContainerBroker
-# 추가된 부분 끝: parallel 전용 broker 확장 사용
+from swift.container.backend import ContainerBroker
 from swift.container.sync_store import ContainerSyncStore
 from swift.common.container_sync_realms import ContainerSyncRealms
 from swift.common.daemon import run_daemon
@@ -205,18 +203,12 @@ class ContainerSync(Daemon):
         swift.common.db.DB_PREALLOCATION = \
             config_true_value(conf.get('db_preallocation', 'f'))
         self.conn_timeout = float(conf.get('conn_timeout', 5))
-        # 추가된 부분 시작: retry checker 분리 및 takeover 설정 추가
-        self.retry_checker_shift = max(
-            1, int(conf.get('retry_checker_shift') or 1))
-        self.retry_takeover_timeout = float(
-            conf.get('retry_takeover_timeout') or self.container_time * 2)
-        # 추가된 부분 끝: retry checker 분리 및 takeover 설정 추가
         # 추가된 부분 시작: row 병렬 처리 관련 설정값 추가
         self.sync_row_concurrency = max(
             1, int(conf.get('sync_row_concurrency') or 8))
         self.sync_row_batch_size = max(
             1, int(conf.get('sync_row_batch_size') or
-                   self.sync_row_concurrency))
+                   self.sync_row_concurrency * 3))
         # 추가된 부분 끝: row 병렬 처리 관련 설정값 추가
         request_tries = int(conf.get('request_tries') or 3)
 
@@ -351,41 +343,6 @@ class ContainerSync(Daemon):
         key = hash_path(info['account'], info['container'],
                         row['name'], raw_digest=True)
         return unpack_from('>I', key)[0] % len(nodes) == ordinal
-
-    # 추가된 부분 시작: retry checker 분리 및 takeover 계산 헬퍼 추가
-    def _row_owner_ordinal(self, row, info, nodes):
-        key = hash_path(info['account'], info['container'],
-                        row['name'], raw_digest=True)
-        return unpack_from('>I', key)[0] % len(nodes)
-
-    def _retry_checker_ordinal(self, row, info, nodes):
-        owner_ordinal = self._row_owner_ordinal(row, info, nodes)
-        return (owner_ordinal + self.retry_checker_shift) % len(nodes)
-
-    def _retry_checker_is_stale(self, checker_state, sync_point1, now):
-        if checker_state.get('point', -1) >= sync_point1:
-            return False
-        updated_at = float(checker_state.get('updated_at') or 0)
-        if updated_at <= 0:
-            return False
-        return now - updated_at >= self.retry_takeover_timeout
-
-    def _retry_active_ordinal(self, row, info, nodes, retry_state,
-                              sync_point1, now):
-        base_checker = self._retry_checker_ordinal(row, info, nodes)
-        base_state = retry_state[str(base_checker)]
-        if not self._retry_checker_is_stale(base_state, sync_point1, now):
-            return base_checker
-
-        for offset in range(1, len(nodes)):
-            candidate = (base_checker + offset) % len(nodes)
-            candidate_state = retry_state[str(candidate)]
-            if not self._retry_checker_is_stale(
-                    candidate_state, sync_point1, now):
-                return candidate
-
-        return (base_checker + 1) % len(nodes)
-    # 추가된 부분 끝: retry checker 분리 및 takeover 계산 헬퍼 추가
     # 추가된 부분 끝: row 조회/실행을 배치 및 병렬 단위로 처리하는 헬퍼 추가
 
     def container_sync(self, path):
@@ -457,93 +414,60 @@ class ContainerSync(Daemon):
                 next_sync_point = None
                 sync_stage_time = start_at
                 try:
-                    # 추가된 부분 시작: retry checker 분리 + takeover + checker별 progress 저장
-                    retry_state = broker.get_x_container_sync_retry_state(
-                        len(nodes))
-                    my_retry_point = retry_state[str(ordinal)]['point']
-                    retry_fetch_point = my_retry_point
-                    retry_halted = False
-
-                    while time() < stop_at and \
-                            retry_fetch_point < sync_point1 and \
-                            not retry_halted:
+                    while time() < stop_at and sync_point2 < sync_point1:
+                        # 추가된 부분 시작: 누락 row 재동기화 구간을 단건 처리에서 배치 병렬 처리로 변경
                         rows = self._get_row_batch(
-                            broker, retry_fetch_point, sync_point1)
+                            broker, sync_point2, sync_point1)
                         if not rows:
                             break
-
-                        batch_now = time()
-                        active_ordinals = {
-                            row['ROWID']: self._retry_active_ordinal(
-                                row, info, nodes, retry_state,
-                                sync_point1, batch_now)
-                            for row in rows
-                        }
-                        rows_to_sync = [
-                            row for row in rows
-                            if active_ordinals[row['ROWID']] == ordinal
-                        ]
-                        results = dict(
-                            (row['ROWID'], success)
-                            for row, success in self._run_row_batch(
-                                rows_to_sync, sync_to, user_key, broker,
-                                info, realm, realm_key))
-
-                        for row in rows:
-                            retry_fetch_point = row['ROWID']
-                            if active_ordinals[row['ROWID']] != ordinal:
-                                my_retry_point = row['ROWID']
-                                continue
-
-                            success = results[row['ROWID']]
-                            if not success:
-                                retry_halted = True
-                                next_sync_point = my_retry_point
-                                break
-                            my_retry_point = row['ROWID']
-
-                        retry_state[str(ordinal)] = {
-                            'point': my_retry_point,
-                            'updated_at': time(),
-                        }
-                        broker.set_x_container_sync_retry_state(retry_state)
-
-                    sync_point2 = min(
-                        checker_state['point']
-                        for checker_state in retry_state.values())
-                    broker.set_x_container_sync_points(None, sync_point2)
-                    next_sync_point = sync_point2
-                    # 추가된 부분 끝: retry checker 분리 + takeover + checker별 progress 저장
+                        # This node will only initially sync out one third
+                        # of the objects (if 3 replicas, 1/4 if 4, etc.)
+                        # and will skip problematic rows as needed in case of
+                        # faults.
+                        # This section will attempt to sync previously skipped
+                        # rows in case the previous attempts by any of the
+                        # nodes didn't succeed.
+                        last_success_point = sync_point2
+                        results = self._run_row_batch(
+                            rows, sync_to, user_key, broker, info, realm,
+                            realm_key)
+                        for row, success in results:
+                            if not success and next_sync_point is None:
+                                next_sync_point = last_success_point
+                            sync_point2 = row['ROWID']
+                            broker.set_x_container_sync_points(
+                                None, sync_point2)
+                            last_success_point = sync_point2
+                        # 추가된 부분 끝: 누락 row 재동기화 구간을 단건 처리에서 배치 병렬 처리로 변경
+                    if next_sync_point:
+                        broker.set_x_container_sync_points(None,
+                                                           next_sync_point)
+                    else:
+                        next_sync_point = sync_point2
                     sync_stage_time = time()
-                    # 추가된 부분 시작: 신규 row는 기존 owner 기준으로 분산 처리하고 sync_point1을 배치 단위로 갱신
-                    pending_new = collections.deque()
-                    with ContextPool(self.sync_row_concurrency) as pool:
-                        while sync_stage_time < stop_at:
-                            rows = self._get_row_batch(broker, sync_point1)
-                            if not rows:
-                                break
-                            for row in rows:
-                                if self._row_is_mine(row, info, nodes, ordinal):
-                                    pending_new.append((row, pool.spawn(
-                                        self.container_sync_row, row, sync_to,
-                                        user_key, broker, info, realm,
-                                        realm_key)))
-                                    if len(pending_new) >= \
-                                            self.sync_row_concurrency:
-                                        _, done_coro = \
-                                            pending_new.popleft()
-                                        done_coro.wait()
-                                sync_point1 = row['ROWID']
-
+                    while sync_stage_time < stop_at:
+                        # 추가된 부분 시작: 신규 row 처리 구간을 담당 row 선별 후 배치 병렬 처리로 변경
+                        rows = self._get_row_batch(broker, sync_point1)
+                        if not rows:
+                            break
+                        rows_to_sync = []
+                        for row in rows:
+                            # This node will only initially sync out one third
+                            # of the objects (if 3 replicas, 1/4 if 4, etc.).
+                            # It'll come back around to the section above
+                            # and attempt to sync previously skipped rows in
+                            # case the other nodes didn't succeed or in case
+                            # it failed to do so the first time.
+                            if self._row_is_mine(row, info, nodes, ordinal):
+                                rows_to_sync.append(row)
+                            sync_point1 = row['ROWID']
                             broker.set_x_container_sync_points(
                                 sync_point1, None)
-                            sync_stage_time = time()
-
-                        while pending_new:
-                            _, done_coro = pending_new.popleft()
-                            done_coro.wait()
-                    sync_stage_time = time()
-                    # 추가된 부분 끝: 신규 row는 기존 owner 기준으로 분산 처리하고 sync_point1을 배치 단위로 갱신
+                        self._run_row_batch(
+                            rows_to_sync, sync_to, user_key, broker, info,
+                            realm, realm_key)
+                        # 추가된 부분 끝: 신규 row 처리 구간을 담당 row 선별 후 배치 병렬 처리로 변경
+                        sync_stage_time = time()
                     self.container_syncs += 1
                     self.logger.increment('syncs')
                 finally:

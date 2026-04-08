@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1120" viewBox="0 0 1700 1120">
+  <defs>
+    <style>
+      .bg { fill: #f6f4ee; }
+      .panel { fill: #fffdf8; stroke: #1f2937; stroke-width: 2; rx: 22; ry: 22; }
+      .title { font: 700 36px sans-serif; fill: #111827; }
+      .subtitle { font: 500 18px sans-serif; fill: #4b5563; }
+      .section { font: 700 25px sans-serif; fill: #111827; }
+      .label { font: 700 19px sans-serif; fill: #111827; }
+      .small { font: 500 15px sans-serif; fill: #374151; }
+      .small-strong { font: 700 15px sans-serif; fill: #1f2937; }
+      .box { fill: #ffffff; stroke: #334155; stroke-width: 2; rx: 16; ry: 16; }
+      .box-blue { fill: #dbeafe; stroke: #1d4ed8; stroke-width: 2; rx: 16; ry: 16; }
+      .box-green { fill: #dcfce7; stroke: #15803d; stroke-width: 2; rx: 16; ry: 16; }
+      .box-orange { fill: #ffedd5; stroke: #c2410c; stroke-width: 2; rx: 16; ry: 16; }
+      .box-purple { fill: #f3e8ff; stroke: #7e22ce; stroke-width: 2; rx: 16; ry: 16; }
+      .box-yellow { fill: #fef3c7; stroke: #b45309; stroke-width: 2; rx: 16; ry: 16; }
+      .line { stroke: #475569; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #1d4ed8; stroke-width: 3; fill: none; marker-end: url(#arrowBlue); }
+      .line-purple { stroke: #7e22ce; stroke-width: 3; stroke-dasharray: 12 8; fill: none; marker-end: url(#arrowPurple); }
+      .callout { fill: #ecfdf5; stroke: #16a34a; stroke-width: 2; rx: 18; ry: 18; }
+      .callout-warn { fill: #fff7ed; stroke: #ea580c; stroke-width: 2; rx: 18; ry: 18; }
+      .note { font: 700 18px sans-serif; fill: #14532d; }
+      .warn { font: 700 18px sans-serif; fill: #9a3412; }
+      .badge { fill: #111827; rx: 12; ry: 12; }
+      .badge-text { font: 700 14px sans-serif; fill: #ffffff; }
+    </style>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="14" markerHeight="14" refX="11" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#1d4ed8"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="14" markerHeight="14" refX="11" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#7e22ce"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1700" height="1120"/>
+
+  <text class="title" x="64" y="64">sync.py vs sync_parallel.py</text>
+  <text class="subtitle" x="64" y="98">현재 parallel 버전은 신규 row는 기존 owner 분산을 유지하고, retry 구간은 별도 retry checker와 takeover 규칙을 둔 뒤 checker별 progress의 최소값으로 sp2를 계산한다.</text>
+
+  <rect class="panel" x="48" y="136" width="700" height="790"/>
+  <rect class="panel" x="782" y="136" width="870" height="790"/>
+
+  <text class="section" x="80" y="180">기준: sync.py</text>
+  <text class="section" x="814" y="180">현재: sync_parallel.py</text>
+
+  <rect class="box" x="88" y="214" width="620" height="84"/>
+  <text class="label" x="114" y="252">1. retry 구간은 전체 재검사</text>
+  <text class="small" x="114" y="278">sp2 ~ sp1 구간에서 각 노드가 row를 다시 따라가며 container_sync_row() 호출</text>
+
+  <rect class="box" x="88" y="342" width="620" height="98"/>
+  <text class="label" x="114" y="378">2. live object는 remote HEAD 후 skip 가능</text>
+  <text class="small" x="114" y="406">이미 처리된 row도 다른 노드가 다시 HEAD 해서 확인</text>
+
+  <rect class="box-orange" x="88" y="484" width="620" height="98"/>
+  <text class="label" x="114" y="520">3. sp2는 단일 전역 progress</text>
+  <text class="small" x="114" y="548">row를 처리할 때마다 set_x_container_sync_points(None, sp2)</text>
+
+  <rect class="box" x="88" y="626" width="620" height="92"/>
+  <text class="label" x="114" y="662">4. 신규 row만 owner 분산</text>
+  <text class="small" x="114" y="690">hash(object) % len(nodes) == ordinal 일 때만 실제 sync</text>
+
+  <path class="line" d="M398 298 L398 342"/>
+  <path class="line" d="M398 440 L398 484"/>
+  <path class="line" d="M398 582 L398 626"/>
+
+  <rect class="callout-warn" x="104" y="764" width="590" height="136"/>
+  <text class="warn" x="130" y="802">원본 특징</text>
+  <text class="small" x="130" y="830">- 구현은 단순하지만 retry 구간에서 중복 HEAD가 큼</text>
+  <text class="small" x="130" y="854">- 신규 row는 분산되지만 retry row는 사실상 전체 재검사</text>
+  <text class="small" x="130" y="878">- sp2 하나로 전체 완료 지점을 표현</text>
+
+  <rect class="box-blue" x="822" y="214" width="790" height="90"/>
+  <text class="label" x="848" y="252">1. 신규 row owner와 다른 retry checker 지정</text>
+  <text class="small" x="848" y="280">retry_checker = (row_owner + retry_checker_shift) % replica_count</text>
+
+  <rect class="box-green" x="822" y="348" width="790" height="118"/>
+  <text class="label" x="848" y="386">2. retry 구간은 자기 checker row만 실행</text>
+  <text class="small" x="848" y="414">rows를 읽은 뒤 active_ordinal을 계산하고, 내 ordinal인 row만 _run_row_batch()로 처리</text>
+  <text class="small" x="848" y="440">다른 row는 내가 실제 sync하지 않고 progress만 따라감</text>
+
+  <rect class="box-purple" x="822" y="510" width="790" height="122"/>
+  <text class="label" x="848" y="548">3. checker가 stale 하면 takeover</text>
+  <text class="small" x="848" y="576">updated_at이 retry_takeover_timeout 이상 멈춘 checker는 stale 로 판단</text>
+  <text class="small" x="848" y="602">그 경우 다음 ordinal checker가 대신 retry row를 검사</text>
+
+  <rect class="box-orange" x="822" y="676" width="790" height="124"/>
+  <text class="label" x="848" y="714">4. checker별 retry_state 저장</text>
+  <text class="small" x="848" y="742">backend_parallel.py가 metadata에 {ordinal: {point, updated_at}} 형태로 저장</text>
+  <text class="small" x="848" y="768">각 노드는 자기 checker progress만 갱신</text>
+
+  <rect class="box-yellow" x="822" y="844" width="790" height="86"/>
+  <text class="label" x="848" y="882">5. 전역 sp2는 min(retry_state[*].point)</text>
+  <text class="small" x="848" y="908">가장 뒤처진 checker 기준으로만 sp2 전진 → 보수적 progress 관리</text>
+
+  <path class="line" d="M1218 304 L1218 348"/>
+  <path class="line" d="M1218 466 L1218 510"/>
+  <path class="line" d="M1218 632 L1218 676"/>
+  <path class="line" d="M1218 800 L1218 844"/>
+
+  <rect class="badge" x="730" y="256" width="92" height="34"/>
+  <text class="badge-text" x="752" y="279">차이 A</text>
+  <path class="line-blue" d="M708 256 L822 256"/>
+
+  <rect class="badge" x="730" y="586" width="92" height="34"/>
+  <text class="badge-text" x="752" y="609">차이 B</text>
+  <path class="line-purple" d="M708 580 L822 598"/>
+
+  <rect class="panel" x="48" y="958" width="1604" height="118"/>
+  <text class="section" x="78" y="998">한 줄 비교</text>
+  <text class="small-strong" x="78" y="1028">sync.py는 retry 구간을 모든 노드가 다시 검사하는 보수적 구조이고, sync_parallel.py는 retry checker를 분리해 HEAD 중복을 줄이되 stale checker는 takeover 하고, 전역 sp2는 checker별 progress 최소값으로만 올린다.</text>
+  <text class="small-strong" x="78" y="1054">즉 현재 parallel 버전의 핵심 변화는 batch 자체보다도 “retry ownership + takeover + conservative sp2”에 있다.</text>
+</svg>
