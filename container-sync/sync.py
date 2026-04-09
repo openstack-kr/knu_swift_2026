@@ -299,7 +299,7 @@ class ContainerSync(Daemon):
     #lease 갱신
     def _refresh_old_row_lease(self, info, owner):
         if not self.old_row_lease_mc:
-            return
+            return False
         key = self._old_row_lease_key(info)
         payload = {'owner': owner,
                    'expires_at': time() + self.old_row_lease_ttl}
@@ -309,9 +309,11 @@ class ContainerSync(Daemon):
                 self.old_row_lease_mc.set(
                     key, payload, serialize=True,
                     time=self.old_row_lease_ttl)
+                return True
         except Exception:
             self.logger.exception('Failed to refresh old-row lease for %s/%s',
                                   info['account'], info['container'])
+        return False
     #lease 해제
     def _release_old_row_lease(self, info, owner):
         if not self.old_row_lease_mc:
@@ -454,6 +456,17 @@ class ContainerSync(Daemon):
                                         info, realm, realm_key)
         return selected, results
 
+    def _committable_old_row_sync_point(self, current_sync_point, batch,
+                                        results):
+        committed_sync_point = current_sync_point
+        batch_fully_succeeded = True
+        for row, ok in zip(batch, results):
+            if not ok:
+                batch_fully_succeeded = False
+                break
+            committed_sync_point = row['ROWID']
+        return committed_sync_point, batch_fully_succeeded
+
     def container_sync(self, path):
         """
         Checks the given path for a container database, determines if syncing
@@ -522,7 +535,6 @@ class ContainerSync(Daemon):
                     return
                 start_at = time()
                 stop_at = start_at + self.container_time
-                next_sync_point = None
                 sync_stage_time = start_at
                 old_row_lease_waited = False
                 try:
@@ -582,22 +594,33 @@ class ContainerSync(Daemon):
                             batch, sync_to, user_key, broker, info,
                             realm, realm_key)
                         if self.old_row_lease_enabled and self.old_row_lease_mc:
-                            self._refresh_old_row_lease(info,
-                                                        old_row_lease_owner)
+                            if not self._refresh_old_row_lease(
+                                    info, old_row_lease_owner):
+                                old_row_lease_held = False
+                                self.logger.warning(
+                                    'Stopping old-row sync for %(account)s/%(container)s: '
+                                    'lease refresh failed for owner %(owner)s',
+                                    {'account': info['account'],
+                                     'container': info['container'],
+                                     'owner': old_row_lease_owner})
+                                break
 
-                        for row, ok in zip(batch, results):
-                            if not ok:
-                                if next_sync_point is None:
-                                    next_sync_point = sync_point2
-                            sync_point2 = row['ROWID']
+                        committed_sync_point2, batch_fully_succeeded = \
+                            self._committable_old_row_sync_point(
+                                sync_point2, batch, results)
+                        if committed_sync_point2 != sync_point2:
+                            sync_point2 = committed_sync_point2
+                            broker.set_x_container_sync_points(
+                                None, sync_point2)
+                        if not batch_fully_succeeded:
+                            self.logger.info(
+                                'Stopping old-row sync for %(account)s/%(container)s '
+                                'at ROWID %(rowid)s after partial batch success',
+                                {'account': info['account'],
+                                 'container': info['container'],
+                                 'rowid': sync_point2})
+                            break
 
-                        broker.set_x_container_sync_points(None, sync_point2)
-
-                    if next_sync_point:
-                        broker.set_x_container_sync_points(None,
-                                                           next_sync_point)
-                    else:
-                        next_sync_point = sync_point2
                     sync_stage_time = time()
                     while sync_stage_time < stop_at:
                         batch = broker.get_items_since(sync_point1,
@@ -629,7 +652,7 @@ class ContainerSync(Daemon):
                                                     old_row_lease_owner)
                     self.container_report(start_at, sync_stage_time,
                                           sync_point1,
-                                          next_sync_point,
+                                          sync_point2,
                                           info, broker.get_max_row())
         except (Exception, Timeout):
             self.container_failures += 1
