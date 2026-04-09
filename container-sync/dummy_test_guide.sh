@@ -33,7 +33,7 @@ swift-init container-sync stop
 
 # 각 srv, dst 서버: 공통 설정, 아래 변수 값은 원하는대로 조정
 N_CONTAINER=10
-N_OBJECT=10
+N_OBJECT=100
 
 SRC_PREFIX="src"
 DST_PREFIX="dst"
