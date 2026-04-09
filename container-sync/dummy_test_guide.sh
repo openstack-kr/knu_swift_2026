@@ -84,7 +84,7 @@ for i in $(seq -w 1 $N_CONTAINER); do
   echo "$DST_PREFIX-$i : $count"
 done
 # ======================================================
-# src 서버: sync 실행
+# src 서버: sync 실행 for sp1 구간(신규 row 구간)
 time sudo swift-init container-sync once
 # ======================================================
 # dst서버: 컨테이너 찼는지 확인
@@ -92,6 +92,19 @@ for i in $(seq -w 1 $N_CONTAINER); do
   count=$(swift -A "$AUTH_URL" -U "$USER" -K "$KEY" list "$DST_PREFIX-$i" | wc -l)
   echo "$DST_PREFIX-$i : $count"
 done
+# ======================================================
+# src 서버: sp1값, sp2값 확인 (아마 sp2값은 -1)
+find /srv/1/node /srv/2/node /srv/3/node /srv/4/node \
+  -path '*/containers/*' -name '*.db' -type f -print0 2>/dev/null |
+xargs -0 -I{} sqlite3 -readonly -separator ' | ' {} \
+  "select account, container, object_count,
+          (select coalesce(max(ROWID), -1) from object) as max_row,
+          x_container_sync_point1 as sp1,
+          x_container_sync_point2 as sp2
+   from container_stat;"
+# ======================================================
+# src 서버: sync 실행 for sp2 구간(retry 구간)
+time sudo swift-init container-sync once
 
 
 
