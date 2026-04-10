@@ -5,7 +5,7 @@
 - `backend_parallel.py`
 
 다이어그램:
-- `diagrams/sync_parallel_algorithm.svg`
+- <img width="1680" height="1260" alt="image" src="https://github.com/user-attachments/assets/f62b5e80-f482-455a-9676-95265d6e49a2" />
 
 ## 목표
 
