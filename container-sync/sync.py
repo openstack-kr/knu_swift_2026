@@ -213,6 +213,7 @@ class ContainerSync(Daemon):
         self.old_row_lease_enabled = config_true_value(
             conf.get('old_row_lease_enabled', 'true'))
         self.old_row_lease_ttl = int(conf.get('old_row_lease_ttl', 30))
+        self.old_row_lease_step = float(conf.get('old_row_lease_step', 20))
 
         request_tries = int(conf.get('request_tries') or 3)
 
@@ -242,34 +243,67 @@ class ContainerSync(Daemon):
     #현재 프로세스 owner ID 생성
     def _old_row_lease_owner(self, ordinal):
         myip = sorted(self._myips)[0] if self._myips else 'unknown'
-        return '%s:%s:%s:%s' % (myip, self._myport, ordinal, os.getpid())
+        return '%s-%s' % (myip, ordinal)
+
+    def _get_old_row_lease_state(self, broker):
+        md = broker.metadata
+        owner = md.get(LEASE_OWNER_KEY, (None,))[0]
+        expires_raw = md.get(LEASE_EXPIRES_KEY, ('0',))[0]
+        leader = md.get(LEASE_LEADER_KEY, (None,))[0]
+        try:
+            expires = float(expires_raw or 0)
+        except (TypeError, ValueError):
+            expires = 0
+        return owner, expires, leader
 
     def _acquire_old_row_lease_metadata(self, broker, node_id, ttl,
                                         leader_index):
         now = time()
-        expires = now + ttl
-        metadata = {
-            LEASE_OWNER_KEY: (node_id, now),
-            LEASE_EXPIRES_KEY: (str(expires), now),
-            LEASE_LEADER_KEY: (str(leader_index), now),
-        }
-        try:
-            broker.update_metadata(metadata)
+        owner, expires, leader = self._get_old_row_lease_state(broker)
+        self.logger.debug(
+            'Lease state: owner=%s expires=%s now=%s leader=%s',
+            owner, expires, now, leader)
+
+        if not owner or now > expires:
+            new_expires = now + ttl
+            metadata = {
+                LEASE_OWNER_KEY: (node_id, now),
+                LEASE_EXPIRES_KEY: (str(new_expires), now),
+                LEASE_LEADER_KEY: (str(leader_index), now),
+            }
+            try:
+                broker.update_metadata(metadata)
+                self.logger.debug(
+                    'Lease acquired by %s expires=%s leader=%s',
+                    node_id, new_expires, leader_index)
+                return True
+            except Exception:
+                self.logger.warning('Lease acquire failed', exc_info=True)
+                return False
+
+        if owner == node_id:
             self.logger.debug(
-                'Acquired metadata old-row lease owner=%s expires=%s '
-                'leader=%s',
-                node_id, expires, leader_index)
+                'Lease already owned by %s expires=%s leader=%s',
+                node_id, expires, leader)
             return True
-        except Exception:
-            self.logger.warning('Failed to set metadata lease', exc_info=True)
+
+        self.logger.debug('Lease held by %s, skipping', owner)
         return False
 
     def _refresh_old_row_lease_metadata(self, broker, node_id, ttl,
                                         leader_index):
         now = time()
-        expires = now + ttl
+        owner, expires, leader = self._get_old_row_lease_state(broker)
+        self.logger.debug(
+            'Lease state: owner=%s expires=%s now=%s leader=%s',
+            owner, expires, now, leader)
+        if owner != node_id:
+            self.logger.debug('Lost lease ownership')
+            return False
+
+        new_expires = now + ttl
         metadata = {
-            LEASE_EXPIRES_KEY: (str(expires), now),
+            LEASE_EXPIRES_KEY: (str(new_expires), now),
             LEASE_LEADER_KEY: (str(leader_index), now),
         }
         try:
@@ -277,15 +311,20 @@ class ContainerSync(Daemon):
             self.logger.debug(
                 'Refreshed metadata old-row lease owner=%s expires=%s '
                 'leader=%s',
-                node_id, expires, leader_index)
+                node_id, new_expires, leader_index)
             return True
         except Exception:
-            self.logger.warning('Failed to refresh metadata lease',
-                                exc_info=True)
+            self.logger.warning('Lease refresh failed', exc_info=True)
         return False
 
     def _release_old_row_lease_metadata(self, broker, node_id):
         now = time()
+        owner, expires, leader = self._get_old_row_lease_state(broker)
+        self.logger.debug(
+            'Lease state: owner=%s expires=%s now=%s leader=%s',
+            owner, expires, now, leader)
+        if owner != node_id:
+            return
         metadata = {
             LEASE_EXPIRES_KEY: ('0', now),
         }
@@ -506,69 +545,77 @@ class ContainerSync(Daemon):
                 stop_at = start_at + self.container_time
                 sync_stage_time = start_at
                 try:
+                    last_lease_refresh = start_at
                     self.logger.debug(
                         'Old row leader=%s, local=%s',
                         leader_index, ordinal)
-                    if not is_leader:
+                    if self.old_row_lease_enabled:
+                        if not is_leader:
+                            delay = random() * 0.5
+                            if time() + delay < stop_at:
+                                sleep(delay)
+                        jitter = random() * 0.1
+                        if time() + jitter < stop_at:
+                            sleep(jitter)
+                        old_row_lease_held = \
+                            self._acquire_old_row_lease_metadata(
+                                broker, old_row_lease_owner,
+                                self.old_row_lease_ttl, leader_index)
+                    else:
+                        old_row_lease_held = is_leader
+
+                    if not old_row_lease_held:
                         self.container_skips += 1
                         self.logger.increment('skips')
                         self.logger.debug(
                             'Skipping old rows for %(account)s/%(container)s: '
-                            'local ordinal %(ordinal)s is not leader %(leader)s',
+                            'lease not acquired (leader=%(leader)s, ordinal=%(ordinal)s)',
                             {'account': info['account'],
                              'container': info['container'],
                              'ordinal': ordinal,
                              'leader': leader_index})
                     else:
-                        if self.old_row_lease_enabled:
-                            old_row_lease_held = \
-                                self._acquire_old_row_lease_metadata(
-                                    broker, old_row_lease_owner,
-                                    self.old_row_lease_ttl, leader_index)
-                            if not old_row_lease_held:
-                                self.logger.warning(
-                                    'Stopping old-row sync for %(account)s/%(container)s: '
-                                    'metadata lease acquire failed',
+                        self.logger.info(
+                            'Old row processing started by %s (leader=%s)',
+                            old_row_lease_owner, leader_index)
+                        while time() < stop_at and sync_point2 < sync_point1:
+                            batch = self._get_batch_rows(
+                                broker, sync_point2, sync_point1)
+                            if not batch:
+                                break
+
+                            results = self._sync_batch_rows(
+                                batch, sync_to, user_key, broker, info,
+                                realm, realm_key)
+                            now = time()
+                            if self.old_row_lease_enabled and \
+                                    now - last_lease_refresh > \
+                                    self.old_row_lease_step:
+                                if not self._refresh_old_row_lease_metadata(
+                                        broker, old_row_lease_owner,
+                                        self.old_row_lease_ttl,
+                                        leader_index):
+                                    old_row_lease_held = False
+                                    self.logger.warning(
+                                        'Lease lost, stopping old row sync')
+                                    break
+                                last_lease_refresh = now
+
+                            committed_sync_point2, batch_fully_succeeded = \
+                                self._committable_old_row_sync_point(
+                                    sync_point2, batch, results)
+                            if committed_sync_point2 != sync_point2:
+                                sync_point2 = committed_sync_point2
+                                broker.set_x_container_sync_points(
+                                    None, sync_point2)
+                            if not batch_fully_succeeded:
+                                self.logger.info(
+                                    'Stopping old-row sync for %(account)s/%(container)s '
+                                    'at ROWID %(rowid)s after partial batch success',
                                     {'account': info['account'],
-                                     'container': info['container']})
-                        if old_row_lease_held or not self.old_row_lease_enabled:
-                            while time() < stop_at and sync_point2 < sync_point1:
-                                batch = self._get_batch_rows(
-                                    broker, sync_point2, sync_point1)
-                                if not batch:
-                                    break
-
-                                results = self._sync_batch_rows(
-                                    batch, sync_to, user_key, broker, info,
-                                    realm, realm_key)
-                                if self.old_row_lease_enabled:
-                                    if not self._refresh_old_row_lease_metadata(
-                                            broker, old_row_lease_owner,
-                                            self.old_row_lease_ttl,
-                                            leader_index):
-                                        old_row_lease_held = False
-                                        self.logger.warning(
-                                            'Stopping old-row sync for %(account)s/%(container)s: '
-                                            'metadata lease refresh failed',
-                                            {'account': info['account'],
-                                             'container': info['container']})
-                                        break
-
-                                committed_sync_point2, batch_fully_succeeded = \
-                                    self._committable_old_row_sync_point(
-                                        sync_point2, batch, results)
-                                if committed_sync_point2 != sync_point2:
-                                    sync_point2 = committed_sync_point2
-                                    broker.set_x_container_sync_points(
-                                        None, sync_point2)
-                                if not batch_fully_succeeded:
-                                    self.logger.info(
-                                        'Stopping old-row sync for %(account)s/%(container)s '
-                                        'at ROWID %(rowid)s after partial batch success',
-                                        {'account': info['account'],
-                                         'container': info['container'],
-                                         'rowid': sync_point2})
-                                    break
+                                     'container': info['container'],
+                                     'rowid': sync_point2})
+                                break
 
                     sync_stage_time = time()
                     while sync_stage_time < stop_at:
