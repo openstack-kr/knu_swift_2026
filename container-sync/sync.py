@@ -22,18 +22,22 @@ from random import choice, random
 from struct import unpack_from
 
 from eventlet import sleep, Timeout
-from eventlet.greenpool import GreenPool
 from urllib.parse import urlparse
 
 import swift.common.db
 from swift.common.db import DatabaseConnectionError
-from swift.container.backend import ContainerBroker
+# 추가된 부분 시작: parallel 전용 broker 확장 사용
+from swift.container.backend_parallel import ContainerBroker
+# 추가된 부분 끝: parallel 전용 broker 확장 사용
 from swift.container.sync_store import ContainerSyncStore
 from swift.common.container_sync_realms import ContainerSyncRealms
 from swift.common.daemon import run_daemon
 from swift.common.internal_client import (
     delete_object, put_object, head_object,
     InternalClient, UnexpectedResponse)
+# 추가된 부분 시작: retry progress memcache 저장을 위해 load_memcache import
+from swift.common.memcached import load_memcache
+# 추가된 부분 끝: retry progress memcache 저장을 위해 load_memcache import
 from swift.common.exceptions import ClientException
 from swift.common.ring import Ring
 from swift.common.ring.utils import is_local_device
@@ -41,8 +45,9 @@ from swift.common.swob import normalize_etag
 from swift.common.utils import (
     clean_content_type, config_true_value,
     FileLikeIter, get_logger, hash_path, quote, validate_sync_to,
-    whataremyips, Timestamp, decode_timestamps, parse_options,
-    md5) #determnistic leader 계산하기 위해 추가
+    # 추가된 부분 시작: row 단위 병렬 실행을 위해 ContextPool import
+    whataremyips, Timestamp, decode_timestamps, parse_options, ContextPool)
+    # 추가된 부분 끝: row 단위 병렬 실행을 위해 ContextPool import
 from swift.common.daemon import Daemon
 from swift.common.http import HTTP_UNAUTHORIZED, HTTP_NOT_FOUND, HTTP_CONFLICT
 from swift.common.wsgi import ConfigString
@@ -74,10 +79,6 @@ use = egg:swift#proxy_logging
 use = egg:swift#catch_errors
 """.lstrip()
 
-LEASE_OWNER_KEY = 'x-container-sync-oldrow-owner'
-LEASE_EXPIRES_KEY = 'x-container-sync-oldrow-expires'
-LEASE_LEADER_KEY = 'x-container-sync-oldrow-leader'
-
 
 class ContainerSync(Daemon):
     """
@@ -94,13 +95,11 @@ class ContainerSync(Daemon):
     be down.
 
     Two sync points are kept per container database. All rows between the two
-    sync points trigger updates. These older rows are handled only by the
-    deterministic leader for the container, with metadata-backed lease fields
-    recorded so takeover/failover logic can be added later. Any rows newer
-    than both sync points continue to be partitioned across primary replicas
-    based on node position for the container. After a sync run, the first sync
-    point is set to the newest ROWID known and the second sync point is set to
-    newest ROWID for which all updates have been sent.
+    sync points trigger updates. Any rows newer than both sync points cause
+    updates depending on the node's position for the container (primary nodes
+    do one third, etc. depending on the replica count of course). After a sync
+    run, the first sync point is set to the newest ROWID known and the second
+    sync point is set to newest ROWID for which all updates have been sent.
 
     An example may help. Assume replica count is 3 and perfectly matching
     ROWIDs starting at 1.
@@ -119,15 +118,18 @@ class ContainerSync(Daemon):
 
        * SyncPoint1 starts as 6.
        * SyncPoint2 starts as -1.
-       * The rows between -1 and 6 all trigger updates, but only the
-         deterministic leader performs that validation work.
-       * Six more rows newer than SyncPoint1 are still partitioned across
-         the three primary replicas.
+       * The rows between -1 and 6 all trigger updates (most of which
+         should short-circuit on the remote end as having already been
+         done).
+       * Six more rows newer than SyncPoint1, so a third of the rows are
+         sent by node 1, another third by node 2, remaining third by node
+         3.
        * SyncPoint1 is set as 12 (the newest ROWID known).
        * SyncPoint2 is set as 6 (the newest "all updates" ROWID).
 
-    In this way, only one node rechecks old rows at a time, while new rows
-    keep the original replica-level partitioning for better throughput.
+    In this way, under normal circumstances each node sends its share of
+    updates each run and just sends a batch of older updates to ensure nothing
+    was missed.
 
     :param conf: The dict of configuration values from the [container-sync]
                  section of the container-server.conf
@@ -206,15 +208,24 @@ class ContainerSync(Daemon):
         swift.common.db.DB_PREALLOCATION = \
             config_true_value(conf.get('db_preallocation', 'f'))
         self.conn_timeout = float(conf.get('conn_timeout', 5))
-        self.batch_size = int(conf.get('batch_size', 24))
-        self.batch_workers = int(conf.get('batch_workers', 8))
-
-        # old row leader/lease settings
-        self.old_row_lease_enabled = config_true_value(
-            conf.get('old_row_lease_enabled', 'true'))
-        self.old_row_lease_ttl = int(conf.get('old_row_lease_ttl', 30))
-        self.old_row_lease_step = float(conf.get('old_row_lease_step', 20))
-
+        # 추가된 부분 시작: retry checker 분리 및 takeover 설정 추가
+        self.retry_checker_shift = max(
+            1, int(conf.get('retry_checker_shift') or 1))
+        self.retry_takeover_timeout = float(
+            conf.get('retry_takeover_timeout') or self.container_time * 2)
+        self.retry_memcache_enabled = config_true_value(
+            conf.get('retry_memcache_enabled', 'true'))
+        self.retry_memcache_ttl = int(conf.get('retry_memcache_ttl') or
+                                      max(self.retry_takeover_timeout * 4, 300))
+        self.retry_memcache = load_memcache(conf, self.logger) \
+            if self.retry_memcache_enabled else None
+        # 추가된 부분 끝: retry checker 분리 및 takeover 설정 추가
+        # 추가된 부분 시작: row 병렬 처리 관련 설정값 추가
+        self.sync_row_concurrency = max(
+            1, int(conf.get('sync_row_concurrency') or 8))
+        self.sync_row_batch_size = max(
+            1, int(conf.get('sync_row_batch_size') or 24))
+        # 추가된 부분 끝: row 병렬 처리 관련 설정값 추가
         request_tries = int(conf.get('request_tries') or 3)
 
         internal_client_conf_path = conf.get('internal_client_conf_path')
@@ -240,102 +251,6 @@ class ContainerSync(Daemon):
                 'Unable to load internal client from config: '
                 '%(conf)r (%(error)s)'
                 % {'conf': internal_client_conf_path, 'error': err})
-    #현재 프로세스 owner ID 생성
-    def _old_row_lease_owner(self, ordinal):
-        myip = sorted(self._myips)[0] if self._myips else 'unknown'
-        return '%s-%s' % (myip, ordinal)
-
-    def _get_old_row_lease_state(self, broker):
-        md = broker.metadata
-        owner = md.get(LEASE_OWNER_KEY, (None,))[0]
-        expires_raw = md.get(LEASE_EXPIRES_KEY, ('0',))[0]
-        leader = md.get(LEASE_LEADER_KEY, (None,))[0]
-        try:
-            expires = float(expires_raw or 0)
-        except (TypeError, ValueError):
-            expires = 0
-        return owner, expires, leader
-
-    def _acquire_old_row_lease_metadata(self, broker, node_id, ttl,
-                                        leader_index):
-        now = time()
-        owner, expires, leader = self._get_old_row_lease_state(broker)
-        self.logger.debug(
-            'Lease state: owner=%s expires=%s now=%s leader=%s',
-            owner, expires, now, leader)
-
-        if not owner or now > expires:
-            new_expires = now + ttl
-            metadata = {
-                LEASE_OWNER_KEY: (node_id, now),
-                LEASE_EXPIRES_KEY: (str(new_expires), now),
-                LEASE_LEADER_KEY: (str(leader_index), now),
-            }
-            try:
-                broker.update_metadata(metadata)
-                self.logger.debug(
-                    'Lease acquired by %s expires=%s leader=%s',
-                    node_id, new_expires, leader_index)
-                return True
-            except Exception:
-                self.logger.warning('Lease acquire failed', exc_info=True)
-                return False
-
-        if owner == node_id:
-            self.logger.debug(
-                'Lease already owned by %s expires=%s leader=%s',
-                node_id, expires, leader)
-            return True
-
-        self.logger.debug('Lease held by %s, skipping', owner)
-        return False
-
-    def _refresh_old_row_lease_metadata(self, broker, node_id, ttl,
-                                        leader_index):
-        now = time()
-        owner, expires, leader = self._get_old_row_lease_state(broker)
-        self.logger.debug(
-            'Lease state: owner=%s expires=%s now=%s leader=%s',
-            owner, expires, now, leader)
-        if owner != node_id:
-            self.logger.debug('Lost lease ownership')
-            return False
-
-        new_expires = now + ttl
-        metadata = {
-            LEASE_EXPIRES_KEY: (str(new_expires), now),
-            LEASE_LEADER_KEY: (str(leader_index), now),
-        }
-        try:
-            broker.update_metadata(metadata)
-            self.logger.debug(
-                'Refreshed metadata old-row lease owner=%s expires=%s '
-                'leader=%s',
-                node_id, new_expires, leader_index)
-            return True
-        except Exception:
-            self.logger.warning('Lease refresh failed', exc_info=True)
-        return False
-
-    def _release_old_row_lease_metadata(self, broker, node_id):
-        now = time()
-        owner, expires, leader = self._get_old_row_lease_state(broker)
-        self.logger.debug(
-            'Lease state: owner=%s expires=%s now=%s leader=%s',
-            owner, expires, now, leader)
-        if owner != node_id:
-            return
-        metadata = {
-            LEASE_EXPIRES_KEY: ('0', now),
-        }
-        try:
-            broker.update_metadata(metadata)
-            self.logger.debug(
-                'Released metadata old-row lease owner=%s expires=%s',
-                node_id, 0)
-        except Exception:
-            self.logger.warning('Failed to release metadata lease',
-                                exc_info=True)
 
     def run_forever(self, *args, **kwargs):
         """
@@ -400,9 +315,7 @@ class ContainerSync(Daemon):
                          'bytes: %(bytes)s, '
                          'sync_point1: %(point1)s, '
                          'sync_point2: %(point2)s, '
-                         #로그에 lease 옵션 여부를 남기도록 수정
-                         'total_rows: %(total)s, '
-                         'lease_enabled: %(lease_enabled)s',
+                         'total_rows: %(total)s',
                          {'container': '%s/%s' % (info['account'],
                                                   info['container']),
                           'start': start,
@@ -413,69 +326,164 @@ class ContainerSync(Daemon):
                           'bytes': self.container_stats['bytes'],
                           'point1': sync_point1,
                           'point2': sync_point2,
-                          'total': max_row,
-                          'lease_enabled': self.old_row_lease_enabled})
+                          'total': max_row})
 
-    def _get_batch_rows(self, broker, start_rowid, limit_rowid):
-        rows = broker.get_items_since(start_rowid, self.batch_size)
-        result = []
-        for row in rows:
-            if row['ROWID'] > limit_rowid:
-                break
-            result.append(row)
-        return result
+    # 추가된 부분 시작: row 조회/실행을 배치 및 병렬 단위로 처리하는 헬퍼 추가
+    def _get_row_batch(self, broker, sync_point, stop_sync_point=None):
+        rows = broker.get_items_since(sync_point, self.sync_row_batch_size)
+        if stop_sync_point is not None:
+            rows = [row for row in rows
+                    if row['ROWID'] <= stop_sync_point]
+        return rows
 
-    # account/container 해시로 리더 인덱스 계산
-    def _get_leader_index(self, account, container, replica_count):
-        seed = '%s/%s' % (account, container)
-        digest = md5(seed.encode('utf-8'), usedforsecurity=False).digest()
-        return unpack_from('>I', digest)[0] % replica_count
+    def _run_row_batch(self, rows, sync_to, user_key, broker, info,
+                       realm, realm_key):
+        if not rows:
+            return []
 
-    # local 노드 ordinal이랑 leader index 계산
-    def _local_container_leader(self, info, nodes):
-        for ordinal, node in enumerate(nodes):
-            if is_local_device(self._myips, self._myport,
-                               node['ip'], node['port']):
-                leader_index = self._get_leader_index(
-                    info['account'], info['container'], len(nodes))
-                return ordinal, leader_index
-        return None, None
+        if self.sync_row_concurrency <= 1 or len(rows) == 1:
+            return [(row, self.container_sync_row(
+                row, sync_to, user_key, broker, info, realm, realm_key))
+                for row in rows]
 
-    def _sync_batch_rows(self, batch, sync_to, user_key, broker, info,
-                         realm, realm_key):
-        # Run sync of rows in a batch concurrently with up to
-        # self.batch_workers green workers.
-        pool = GreenPool(self.batch_workers)
-        return list(pool.imap(
-            lambda row: self.container_sync_row(
-                row, sync_to, user_key, broker, info, realm, realm_key),
-            batch))
+        pool_size = min(self.sync_row_concurrency, len(rows))
+        with ContextPool(pool_size) as pool:
+            coros = []
+            for row in rows:
+                coros.append((row, pool.spawn(
+                    self.container_sync_row, row, sync_to, user_key,
+                    broker, info, realm, realm_key)))
+            return [(row, coro.wait()) for row, coro in coros]
 
-    def _sync_selected_batch_rows(self, batch, sync_to, user_key, broker, info,
-                                  realm, realm_key, nodes, ordinal):
-        selected = []
-        for row in batch:
-            key = hash_path(info['account'], info['container'],
-                            row['name'], raw_digest=True)
-            if unpack_from('>I', key)[0] % len(nodes) == ordinal:
-                selected.append(row)
-        if not selected:
-            return [], []
-        #기존에는 실행만 하고 결과를 안 넘겼는데, 실제 선택된 row 목록이랑 row 실행 결과 반환하도록 수정
-        results = self._sync_batch_rows(selected, sync_to, user_key, broker,
-                                        info, realm, realm_key)
-        return selected, results
+    def _row_is_mine(self, row, info, nodes, ordinal):
+        key = hash_path(info['account'], info['container'],
+                        row['name'], raw_digest=True)
+        return unpack_from('>I', key)[0] % len(nodes) == ordinal
 
-    def _committable_old_row_sync_point(self, current_sync_point, batch,
-                                        results):
-        committed_sync_point = current_sync_point
-        batch_fully_succeeded = True
-        for row, ok in zip(batch, results):
-            if not ok:
-                batch_fully_succeeded = False
-                break
-            committed_sync_point = row['ROWID']
-        return committed_sync_point, batch_fully_succeeded
+    # 추가된 부분 시작: retry checker 분리 및 takeover 계산 헬퍼 추가
+    def _row_owner_ordinal(self, row, info, nodes):
+        key = hash_path(info['account'], info['container'],
+                        row['name'], raw_digest=True)
+        return unpack_from('>I', key)[0] % len(nodes)
+
+    def _retry_checker_ordinal(self, row, info, nodes):
+        owner_ordinal = self._row_owner_ordinal(row, info, nodes)
+        return (owner_ordinal + self.retry_checker_shift) % len(nodes)
+
+    def _retry_checker_is_stale(self, retry_checker_state, sync_point1, now):
+        if retry_checker_state.get('point', -1) >= sync_point1:
+            return False
+        updated_at = float(retry_checker_state.get('updated_at') or 0)
+        if updated_at <= 0:
+            return False
+        return now - updated_at >= self.retry_takeover_timeout
+
+    def _retry_active_ordinal(self, row, info, nodes, retry_state,
+                              sync_point1, now):
+        retry_base_checker = self._retry_checker_ordinal(row, info, nodes)
+        retry_base_state = retry_state[str(retry_base_checker)]
+        if not self._retry_checker_is_stale(
+                retry_base_state, sync_point1, now):
+            return retry_base_checker
+
+        for offset in range(1, len(nodes)):
+            retry_candidate_checker = (retry_base_checker + offset) % \
+                len(nodes)
+            retry_candidate_state = retry_state[str(retry_candidate_checker)]
+            if not self._retry_checker_is_stale(
+                    retry_candidate_state, sync_point1, now):
+                return retry_candidate_checker
+
+        return (retry_base_checker + 1) % len(nodes)
+
+    def _retry_state_cache_key(self, info, sync_point1, sync_point2, nodes):
+        container_hash = hash_path(info['account'], info['container'])
+        return 'container-sync/retry-v5/%s/%s/%s' % (
+            container_hash, len(nodes), sync_point1)
+
+    def _merge_retry_states(self, broker, retry_state, cached_retry_state,
+                            replica_count):
+        cached_retry_state = broker._normalize_retry_state(
+            cached_retry_state, replica_count)
+        merged_retry_state = {}
+        for retry_ordinal in range(replica_count):
+            key = str(retry_ordinal)
+            retry_db_state = retry_state[key]
+            retry_cached_state = cached_retry_state[key]
+            if retry_cached_state['point'] > retry_db_state['point']:
+                merged_retry_state[key] = retry_cached_state
+            else:
+                merged_retry_state[key] = retry_db_state
+        return merged_retry_state
+
+    def _load_retry_state(self, broker, info, sync_point1, sync_point2, nodes):
+        retry_state = broker.get_x_container_sync_retry_state(len(nodes))
+        retry_cache_key = self._retry_state_cache_key(
+            info, sync_point1, sync_point2, nodes)
+
+        self.logger.info(
+            '[DEBUG] RETRY KEY %s/%s -> %s (sp1=%s sp2=%s)',
+            info['account'], info['container'],
+            retry_cache_key, sync_point1, sync_point2)
+
+        if not self.retry_memcache:
+            self.logger.info(
+                '[DEBUG] RETRY MEMCACHE disabled for %s/%s',
+                info['account'], info['container'])
+            return retry_state, retry_cache_key, False
+
+        try:
+            cached_retry_state = self.retry_memcache.get(
+                retry_cache_key, raise_on_error=True)
+
+            self.logger.info(
+                '[DEBUG] LOAD MEMCACHE key=%s value=%s',
+                retry_cache_key, cached_retry_state)
+
+        except Exception:
+            self.logger.exception(
+                'ERROR loading retry state from memcache for %s/%s',
+                info['account'], info['container'])
+            return retry_state, retry_cache_key, False
+
+        if cached_retry_state:
+            retry_state = self._merge_retry_states(
+                broker, retry_state, cached_retry_state, len(nodes))
+        else:
+            use_memcache = self._store_retry_state(
+                broker, retry_state, retry_cache_key, True)
+            return retry_state, retry_cache_key, use_memcache
+
+        return retry_state, retry_cache_key, True
+
+    def _store_retry_state(self, broker, retry_state, retry_cache_key,
+                           use_memcache, force_db=False):
+        if use_memcache and self.retry_memcache:
+            try:
+                self.logger.info(
+                    '[DEBUG] STORE MEMCACHE key=%s state=%s force_db=%s',
+                    retry_cache_key, retry_state, force_db)
+
+                self.retry_memcache.set(
+                    retry_cache_key, retry_state,
+                    time=self.retry_memcache_ttl, raise_on_error=True)
+
+                if not force_db:
+                    return True
+
+            except Exception:
+                self.logger.exception(
+                    'ERROR storing retry state to memcache')
+
+        self.logger.info(
+            '[DEBUG] STORE DB state=%s key=%s',
+            retry_state, retry_cache_key)
+
+        broker.set_x_container_sync_retry_state(retry_state)
+        return False
+
+    # 추가된 부분 끝: retry checker 분리 및 takeover 계산 헬퍼 추가
+    # 추가된 부분 끝: row 조회/실행을 배치 및 병렬 단위로 처리하는 헬퍼 추가
 
     def container_sync(self, path):
         """
@@ -504,12 +512,12 @@ class ContainerSync(Daemon):
 
             x, nodes = self.container_ring.get_nodes(info['account'],
                                                      info['container'])
-            ordinal, leader_index = self._local_container_leader(info, nodes)
-            if ordinal is None:
+            for ordinal, node in enumerate(nodes):
+                if is_local_device(self._myips, self._myport,
+                                   node['ip'], node['port']):
+                    break
+            else:
                 return
-            is_leader = (ordinal == leader_index)
-            old_row_lease_owner = self._old_row_lease_owner(ordinal)
-            old_row_lease_held = False
             if broker.metadata.get(SYSMETA_VERSIONS_CONT):
                 self.container_skips += 1
                 self.logger.increment('skips')
@@ -543,112 +551,111 @@ class ContainerSync(Daemon):
                     return
                 start_at = time()
                 stop_at = start_at + self.container_time
+                next_sync_point = None
                 sync_stage_time = start_at
                 try:
-                    last_lease_refresh = start_at
-                    self.logger.debug(
-                        'Old row leader=%s, local=%s',
-                        leader_index, ordinal)
-                    if self.old_row_lease_enabled:
-                        if not is_leader:
-                            delay = random() * 0.5
-                            if time() + delay < stop_at:
-                                sleep(delay)
-                        jitter = random() * 0.1
-                        if time() + jitter < stop_at:
-                            sleep(jitter)
-                        old_row_lease_held = \
-                            self._acquire_old_row_lease_metadata(
-                                broker, old_row_lease_owner,
-                                self.old_row_lease_ttl, leader_index)
-                    else:
-                        old_row_lease_held = is_leader
+                    # 추가된 부분 시작: retry checker 분리 + takeover + checker별 progress 저장
+                    if sync_point2 < sync_point1:
+                        retry_state, retry_cache_key, use_retry_memcache = \
+                            self._load_retry_state(
+                                broker, info, sync_point1, sync_point2, nodes)
+                        my_retry_point = retry_state[str(ordinal)]['point']
+                        retry_fetch_point = my_retry_point
+                        retry_halted = False
 
-                    if not old_row_lease_held:
-                        self.container_skips += 1
-                        self.logger.increment('skips')
-                        self.logger.debug(
-                            'Skipping old rows for %(account)s/%(container)s: '
-                            'lease not acquired (leader=%(leader)s, ordinal=%(ordinal)s)',
-                            {'account': info['account'],
-                             'container': info['container'],
-                             'ordinal': ordinal,
-                             'leader': leader_index})
-                    else:
-                        self.logger.info(
-                            'Old row processing started by %s (leader=%s)',
-                            old_row_lease_owner, leader_index)
-                        while time() < stop_at and sync_point2 < sync_point1:
-                            batch = self._get_batch_rows(
-                                broker, sync_point2, sync_point1)
-                            if not batch:
+                        while time() < stop_at and \
+                                retry_fetch_point < sync_point1 and \
+                                not retry_halted:
+                            rows = self._get_row_batch(
+                                broker, retry_fetch_point, sync_point1)
+                            if not rows:
                                 break
 
-                            results = self._sync_batch_rows(
-                                batch, sync_to, user_key, broker, info,
-                                realm, realm_key)
-                            now = time()
-                            if self.old_row_lease_enabled and \
-                                    now - last_lease_refresh > \
-                                    self.old_row_lease_step:
-                                if not self._refresh_old_row_lease_metadata(
-                                        broker, old_row_lease_owner,
-                                        self.old_row_lease_ttl,
-                                        leader_index):
-                                    old_row_lease_held = False
-                                    self.logger.warning(
-                                        'Lease lost, stopping old row sync')
+                            batch_now = time()
+                            retry_active_ordinals = {
+                                row['ROWID']: self._retry_active_ordinal(
+                                    row, info, nodes, retry_state,
+                                    sync_point1, batch_now)
+                                for row in rows
+                            }
+                            retry_rows_to_sync = [
+                                row for row in rows
+                                if retry_active_ordinals[row['ROWID']] ==
+                                ordinal
+                            ]
+                            retry_results = dict(
+                                (row['ROWID'], success)
+                                for row, success in self._run_row_batch(
+                                    retry_rows_to_sync, sync_to, user_key,
+                                    broker, info, realm, realm_key))
+
+                            for row in rows:
+                                retry_fetch_point = row['ROWID']
+                                if retry_active_ordinals[row['ROWID']] != \
+                                        ordinal:
+                                    my_retry_point = row['ROWID']
+                                    continue
+
+                                success = retry_results[row['ROWID']]
+                                if not success:
+                                    retry_halted = True
+                                    next_sync_point = my_retry_point
                                     break
-                                last_lease_refresh = now
+                                my_retry_point = row['ROWID']
 
-                            committed_sync_point2, batch_fully_succeeded = \
-                                self._committable_old_row_sync_point(
-                                    sync_point2, batch, results)
-                            if committed_sync_point2 != sync_point2:
-                                sync_point2 = committed_sync_point2
-                                broker.set_x_container_sync_points(
-                                    None, sync_point2)
-                            if not batch_fully_succeeded:
-                                self.logger.info(
-                                    'Stopping old-row sync for %(account)s/%(container)s '
-                                    'at ROWID %(rowid)s after partial batch success',
-                                    {'account': info['account'],
-                                     'container': info['container'],
-                                     'rowid': sync_point2})
-                                break
+                            retry_state[str(ordinal)] = {
+                                'point': my_retry_point,
+                                'updated_at': time(),
+                            }
+                            self._store_retry_state(
+                                broker, retry_state, retry_cache_key,
+                                use_retry_memcache)
 
+                        self._store_retry_state(
+                            broker, retry_state, retry_cache_key,
+                            use_retry_memcache, force_db=True)
+                        sync_point2 = min(
+                            retry_checker_state['point']
+                            for retry_checker_state in retry_state.values())
+                        broker.set_x_container_sync_points(None, sync_point2)
+                    next_sync_point = sync_point2
+                    # 추가된 부분 끝: retry checker 분리 + takeover + checker별 progress 저장
                     sync_stage_time = time()
-                    while sync_stage_time < stop_at:
-                        batch = broker.get_items_since(sync_point1,
-                                                       self.batch_size)
-                        if not batch:
-                            break
-                        selected, results = self._sync_selected_batch_rows(
-                            batch, sync_to, user_key, broker, info,
-                            realm, realm_key, nodes, ordinal)
-                        # 선택된 row와 결과를 받아서 실제 성공한 selected row까지만 sp1을 전진하고,
-                        # selected가 아예 없으면 batch 마지막 row까지 전진시킴
-                        if selected:
-                            for row, ok in zip(selected, results):
-                                if ok:
-                                    sync_point1 = row['ROWID']
-                                else:
-                                    break
-                        else:
-                            sync_point1 = batch[-1]['ROWID']
+                    # 추가된 부분 시작: 신규 row는 기존 owner 기준으로 분산 처리하고 sync_point1을 배치 단위로 갱신
+                    pending_new = collections.deque()
+                    with ContextPool(self.sync_row_concurrency) as pool:
+                        while sync_stage_time < stop_at:
+                            rows = self._get_row_batch(broker, sync_point1)
+                            if not rows:
+                                break
+                            for row in rows:
+                                if self._row_is_mine(row, info, nodes, ordinal):
+                                    pending_new.append((row, pool.spawn(
+                                        self.container_sync_row, row, sync_to,
+                                        user_key, broker, info, realm,
+                                        realm_key)))
+                                    if len(pending_new) >= \
+                                            self.sync_row_concurrency:
+                                        _, done_coro = \
+                                            pending_new.popleft()
+                                        done_coro.wait()
+                                sync_point1 = row['ROWID']
 
-                        broker.set_x_container_sync_points(sync_point1, None)
-                        sync_stage_time = time()
+                            broker.set_x_container_sync_points(
+                                sync_point1, None)
+                            sync_stage_time = time()
+
+                        while pending_new:
+                            _, done_coro = pending_new.popleft()
+                            done_coro.wait()
+                    sync_stage_time = time()
+                    # 추가된 부분 끝: 신규 row는 기존 owner 기준으로 분산 처리하고 sync_point1을 배치 단위로 갱신
                     self.container_syncs += 1
                     self.logger.increment('syncs')
-                #old 처리가 끝나면 lease를 release 시켜줌.
                 finally:
-                    if old_row_lease_held:
-                        self._release_old_row_lease_metadata(
-                            broker, old_row_lease_owner)
                     self.container_report(start_at, sync_stage_time,
                                           sync_point1,
-                                          sync_point2,
+                                          next_sync_point,
                                           info, broker.get_max_row())
         except (Exception, Timeout):
             self.container_failures += 1
@@ -734,9 +741,7 @@ class ContainerSync(Daemon):
                            realm, realm_key):
         """
         Sends the update the row indicates to the sync_to container.
-        Update can be either delete or put. This method may run in parallel
-        within a batch, but sync point updates are committed by the caller
-        in row order.
+        Update can be either delete or put.
 
         :param row: The updated row in the local database triggering the sync
                     update.
@@ -883,7 +888,6 @@ class ContainerSync(Daemon):
 def main():
     conf_file, options = parse_options(once=True)
     run_daemon(ContainerSync, conf_file, **options)
-
 
 if __name__ == '__main__':
     main()
