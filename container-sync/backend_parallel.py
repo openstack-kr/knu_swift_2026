@@ -2293,6 +2293,8 @@ class ContainerBroker(DatabaseBroker):
 
     # 추가된 부분 시작: retry checker 상태 저장/조회 helper 추가
     def _normalize_retry_state(self, retry_state, replica_count, now=None):
+        # checker ordinal 기준의 dense dict 형태로 정규화해서
+        # 일부 entry 가 비어 있어도 모든 replica 가 같은 형태를 보게 한다.
         now = time() if now is None else now
         normalized = {}
         retry_state = retry_state if isinstance(retry_state, dict) else {}

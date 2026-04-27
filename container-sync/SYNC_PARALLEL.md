@@ -25,10 +25,11 @@ retry 구간의 중복 HEAD를 줄이고 row 처리를 병렬화하는 것이다
 2. retry 구간
 - `sync_point2 < sync_point1`이면 checker별 `retry_state`를 로드한다.
 - row owner는 기존처럼 object hash로 계산하고,
-  retry checker는 `(owner + retry_checker_shift) % replica_count`로 계산한다.
+  retry checker는 `(owner + 1) % replica_count`로 고정한다.
 - 현재 노드는 자기에게 배정된 retry row만 실행하고,
   stale checker는 다른 노드가 takeover 한다.
-- retry state는 memcache 우선으로 갱신하고, 종료 시 metadata에도 flush 한다.
+- retry state는 memcache가 있으면 우선으로 갱신하고,
+  종료 시 metadata에도 flush 한다.
 - 최종 `sync_point2`는 checker별 point의 최소값이다.
 
 3. 신규 row 구간
@@ -43,14 +44,8 @@ retry 구간의 중복 HEAD를 줄이고 row 처리를 병렬화하는 것이다
   row 병렬 실행 수
 - `sync_row_batch_size`
   한 번에 읽는 row 수
-- `retry_checker_shift`
-  retry checker를 owner에서 몇 칸 옮길지
 - `retry_takeover_timeout`
   checker를 stale 로 판단하는 시간
-- `retry_memcache_enabled`
-  retry state memcache 사용 여부
-- `retry_memcache_ttl`
-  retry state memcache TTL
 
 ## sync.py 대비 차이
 
@@ -61,7 +56,7 @@ retry 구간의 중복 HEAD를 줄이고 row 처리를 병렬화하는 것이다
 
 ## v4 방식 예시
 
-복제 수가 3이고 `retry_checker_shift = 1`이라고 가정한다.
+복제 수가 3이라고 가정한다.
 
 - `sp1` 구간은 기존과 같이 write owner가 처리한다.
 - 예를 들어 node 1이 `sp1`에서 `1`, `3`을 처리했다면,

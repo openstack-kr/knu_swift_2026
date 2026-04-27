@@ -134,5 +134,5 @@
 
   <rect class="example" x="48" y="1142" width="1584" height="82"/>
   <text class="section" x="78" y="1182">간단한 예시</text>
-  <text class="small" x="254" y="1182">replica = 3, retry_checker_shift = 1 일 때 node 1 이 sp1 에서 1,3 을 처리했다면, sp2 에서는 <tspan class="emph">2,4 같은 다른 row 를 checker 역할로 처리</tspan>한다. 즉 retry 구간도 <tspan class="emph">대략 1/3 씩 분담</tspan>된다.</text>
+  <text class="small" x="254" y="1182">replica = 3 일 때 node 1 이 sp1 에서 1,3 을 처리했다면, sp2 에서는 <tspan class="emph">2,4 같은 다른 row 를 checker 역할로 처리</tspan>한다. 즉 retry 구간도 <tspan class="emph">대략 1/3 씩 분담</tspan>된다.</text>
 </svg>
