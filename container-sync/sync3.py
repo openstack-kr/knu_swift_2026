@@ -35,9 +35,6 @@ from swift.common.daemon import run_daemon
 from swift.common.internal_client import (
     delete_object, put_object, head_object,
     InternalClient, UnexpectedResponse)
-# Load memcache support for sharing retry progress across nodes.
-# 노드 간 retry progress 공유를 위해 memcache 지원을 불러온다.
-from swift.common.memcached import load_memcache
 from swift.common.exceptions import ClientException
 from swift.common.ring import Ring
 from swift.common.ring.utils import is_local_device
@@ -208,13 +205,12 @@ class ContainerSync(Daemon):
         swift.common.db.DB_PREALLOCATION = \
             config_true_value(conf.get('db_preallocation', 'f'))
         self.conn_timeout = float(conf.get('conn_timeout', 5))
-        # Configure retry takeover timing and cache state lifetime.
-        # retry takeover 시간과 cache 상태 유지 시간을 설정한다.
+        # Configure retry takeover timing and durable checkpoint size.
+        # retry takeover 시간과 durable checkpoint 간격을 설정한다.
         self.retry_takeover_timeout = float(
             conf.get('retry_takeover_timeout') or self.container_time * 2)
-        self.retry_memcache_ttl = int(
-            max(self.retry_takeover_timeout * 4, 300))
-        self.retry_memcache = load_memcache(conf, self.logger)
+        self.retry_checkpoint_rows = max(
+            1, int(conf.get('retry_checkpoint_rows') or 100))
         # Configure row-level concurrency and batch fetch size.
         # row 단위 동시성과 batch 조회 크기를 설정한다.
         self.sync_row_concurrency = max(
@@ -368,84 +364,36 @@ class ContainerSync(Daemon):
         owner_ordinal = unpack_from('>I', key)[0] % len(nodes)
         return (owner_ordinal + 1) % len(nodes)
 
-    # Load retry state from DB first, then overlay shared cache progress.
-    # 먼저 DB 에서 retry 상태를 읽고, 공유 cache progress 가 있으면 덮어쓴다.
-    def _load_retry_state(self, broker, info, sync_point1, sync_point2, nodes):
-        retry_state = broker.get_x_container_sync_retry_state(len(nodes))
-        container_hash = hash_path(info['account'], info['container'])
-        # Use a v2-specific key so cache state is not shared with v1.
-        # sync_parallelized.py 의 cache 와 섞이지 않도록 v2 전용 key 를 사용한다.
-        retry_cache_key = 'container-sync/retry-partition-v2/%s/%s/%s' % (
-            container_hash, len(nodes), sync_point1)
+    # Load retry state only from durable DB metadata.
+    # retry 상태는 durable 한 DB metadata 에서만 읽는다.
+    def _load_retry_state(self, broker, nodes):
+        return broker.get_x_container_sync_retry_state(len(nodes))
 
-        self.logger.info(
-            '[DEBUG] RETRY KEY %s/%s -> %s (sp1=%s sp2=%s)',
-            info['account'], info['container'],
-            retry_cache_key, sync_point1, sync_point2)
+    # Persist retry state to DB after enough durable progress has accumulated.
+    # 충분한 durable progress 가 쌓였을 때만 retry 상태를 DB 에 기록한다.
+    def _checkpoint_retry_state(self, broker, retry_state, flushed_points,
+                                force=False):
+        changed = {}
+        for partition_key, partition_state in retry_state.items():
+            point = partition_state['point']
+            previous_point = flushed_points.get(partition_key, -1)
+            if point != previous_point:
+                changed[partition_key] = point
 
-        if not self.retry_memcache:
-            self.logger.info(
-                '[DEBUG] RETRY MEMCACHE disabled for %s/%s',
-                info['account'], info['container'])
-            return retry_state, retry_cache_key, False
+        if not changed:
+            return flushed_points, False
 
-        try:
-            cached_retry_state = self.retry_memcache.get(
-                retry_cache_key, raise_on_error=True)
+        if not force and all(
+                point - flushed_points.get(partition_key, -1) <
+                self.retry_checkpoint_rows
+                for partition_key, point in changed.items()):
+            return flushed_points, False
 
-            self.logger.info(
-                '[DEBUG] LOAD MEMCACHE key=%s value=%s',
-                retry_cache_key, cached_retry_state)
-
-        except Exception:
-            self.logger.exception(
-                'ERROR loading retry state from memcache for %s/%s',
-                info['account'], info['container'])
-            return retry_state, retry_cache_key, False
-
-        if cached_retry_state:
-            cached_retry_state = broker._normalize_retry_state(
-                cached_retry_state, len(nodes))
-            retry_state = {
-                str(retry_ordinal): max(
-                    retry_state[str(retry_ordinal)],
-                    cached_retry_state[str(retry_ordinal)],
-                    key=lambda state: state['point'])
-                for retry_ordinal in range(len(nodes))}
-        else:
-            use_memcache = self._store_retry_state(
-                broker, retry_state, retry_cache_key, True)
-            return retry_state, retry_cache_key, use_memcache
-
-        return retry_state, retry_cache_key, True
-
-    # Store retry state in memcache when available, then persist to DB if needed.
-    # 가능하면 memcache 에 retry 상태를 저장하고, 필요하면 DB 에도 기록한다.
-    def _store_retry_state(self, broker, retry_state, retry_cache_key,
-                           use_memcache, force_db=False):
-        if use_memcache and self.retry_memcache:
-            try:
-                self.logger.info(
-                    '[DEBUG] STORE MEMCACHE key=%s state=%s force_db=%s',
-                    retry_cache_key, retry_state, force_db)
-
-                self.retry_memcache.set(
-                    retry_cache_key, retry_state,
-                    time=self.retry_memcache_ttl, raise_on_error=True)
-
-                if not force_db:
-                    return True
-
-            except Exception:
-                self.logger.exception(
-                    'ERROR storing retry state to memcache')
-
-        self.logger.info(
-            '[DEBUG] STORE DB state=%s key=%s',
-            retry_state, retry_cache_key)
-
+        self.logger.info('[DEBUG] STORE DB retry state=%s', retry_state)
         broker.set_x_container_sync_retry_state(retry_state)
-        return False
+        return dict((partition_key, partition_state['point'])
+                    for partition_key, partition_state in
+                    retry_state.items()), True
 
     def container_sync(self, path):
         """
@@ -524,10 +472,13 @@ class ContainerSync(Daemon):
                     # together so we do not rescan the same ROWID range for
                     # each partition separately.
                     if sync_point2 < sync_point1:
-                        retry_state, retry_cache_key, use_retry_memcache = \
-                            self._load_retry_state(
-                                broker, info, sync_point1, sync_point2, nodes)
-                        while time() < stop_at:
+                        retry_state = self._load_retry_state(broker, nodes)
+                        flushed_retry_points = dict(
+                            (partition_key, partition_state['point'])
+                            for partition_key, partition_state in
+                            retry_state.items())
+                        retry_halted = False
+                        while time() < stop_at and not retry_halted:
                             batch_now = time()
                             active_partitions = {}
                             for partition in range(len(nodes)):
@@ -565,6 +516,10 @@ class ContainerSync(Daemon):
                                 (row, self._retry_partition(
                                     row, info, nodes))
                                 for row in rows]
+                            previous_points = dict(
+                                (partition, partition_state['point'])
+                                for partition, partition_state in
+                                active_partitions.items())
                             retry_rows_to_sync = [
                                 row for row, row_partition
                                 in rows_with_partitions
@@ -594,20 +549,28 @@ class ContainerSync(Daemon):
 
                                     partition_state['point'] = rowid
 
+                            state_changed = False
                             updated_at = time()
                             for partition, partition_state in \
                                     active_partitions.items():
-                                retry_state[str(partition)] = {
-                                    'point': partition_state['point'],
-                                    'updated_at': updated_at,
-                                }
-                            self._store_retry_state(
-                                broker, retry_state, retry_cache_key,
-                                use_retry_memcache)
+                                if partition_state['point'] > \
+                                        previous_points[partition]:
+                                    partition_state['updated_at'] = updated_at
+                                    state_changed = True
+                                retry_state[str(partition)] = partition_state
 
-                        self._store_retry_state(
-                            broker, retry_state, retry_cache_key,
-                            use_retry_memcache, force_db=True)
+                            if state_changed:
+                                flushed_retry_points, _ = \
+                                    self._checkpoint_retry_state(
+                                        broker, retry_state,
+                                        flushed_retry_points)
+
+                            if blocked_partitions:
+                                retry_halted = True
+
+                        flushed_retry_points, _ = self._checkpoint_retry_state(
+                            broker, retry_state, flushed_retry_points,
+                            force=True)
                         sync_point2 = min(
                             retry_partition_state['point']
                             for retry_partition_state in retry_state.values())
