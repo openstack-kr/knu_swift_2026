@@ -26,7 +26,6 @@ from urllib.parse import urlparse
 
 import swift.common.db
 from swift.common.db import DatabaseConnectionError
-# Use the broker extension that persists retry progress state.
 # retry progress 상태를 저장하는 broker 확장을 사용한다.
 from swift.container.backend_parallel import ContainerBroker
 from swift.container.sync_store import ContainerSyncStore
@@ -42,7 +41,6 @@ from swift.common.swob import normalize_etag
 from swift.common.utils import (
     clean_content_type, config_true_value,
     FileLikeIter, get_logger, hash_path, quote, validate_sync_to,
-    # Use a green thread pool for row-level parallel work.
     # row 단위 병렬 작업에 green thread pool 을 사용한다.
     whataremyips, Timestamp, decode_timestamps, parse_options, ContextPool)
 from swift.common.daemon import Daemon
@@ -205,13 +203,11 @@ class ContainerSync(Daemon):
         swift.common.db.DB_PREALLOCATION = \
             config_true_value(conf.get('db_preallocation', 'f'))
         self.conn_timeout = float(conf.get('conn_timeout', 5))
-        # Configure retry takeover timing and durable checkpoint size.
         # retry takeover 시간과 durable checkpoint 간격을 설정한다.
         self.retry_takeover_timeout = float(
             conf.get('retry_takeover_timeout') or self.container_time * 2)
         self.retry_checkpoint_rows = max(
             1, int(conf.get('retry_checkpoint_rows') or 100))
-        # Configure row-level concurrency and batch fetch size.
         # row 단위 동시성과 batch 조회 크기를 설정한다.
         self.sync_row_concurrency = max(
             1, int(conf.get('sync_row_concurrency') or 8))
@@ -319,7 +315,6 @@ class ContainerSync(Daemon):
                           'point2': sync_point2,
                           'total': max_row})
 
-    # Batch row reads to reduce per-row database churn.
     # row 조회를 batch 로 묶어 row 마다 발생하는 DB 부담을 줄인다.
     def _get_row_batch(self, broker, sync_point, stop_sync_point=None):
         rows = broker.get_items_since(sync_point, self.sync_row_batch_size)
@@ -328,7 +323,6 @@ class ContainerSync(Daemon):
                     if row['ROWID'] <= stop_sync_point]
         return rows
 
-    # Execute a row batch serially or in parallel depending on its size.
     # batch 크기에 따라 직렬 또는 병렬로 row 작업을 실행한다.
     def _run_row_batch(self, rows, sync_to, user_key, broker, info,
                        realm, realm_key):
@@ -349,14 +343,13 @@ class ContainerSync(Daemon):
                 for row in rows]
             return [(row, coro.wait()) for row, coro in coros]
 
+    # 현재 row 의 신규 sync owner 가 이 노드인지 계산한다.
     def _row_is_mine(self, row, info, nodes, ordinal):
         key = hash_path(info['account'], info['container'],
                         row['name'], raw_digest=True)
         return unpack_from('>I', key)[0] % len(nodes) == ordinal
 
-    # Compute which retry partition owns this row.
     # row 가 어느 retry partition 에 속하는지 계산한다.
-    # This partition is only a retry owner id, not Swift container sharding.
     # partition 은 실제 Swift sharding 이 아니라 retry 담당 번호만 의미한다.
     def _retry_partition(self, row, info, nodes):
         key = hash_path(info['account'], info['container'],
@@ -364,12 +357,10 @@ class ContainerSync(Daemon):
         owner_ordinal = unpack_from('>I', key)[0] % len(nodes)
         return (owner_ordinal + 1) % len(nodes)
 
-    # Load retry state only from durable DB metadata.
     # retry 상태는 durable 한 DB metadata 에서만 읽는다.
     def _load_retry_state(self, broker, nodes):
         return broker.get_x_container_sync_retry_state(len(nodes))
 
-    # Persist retry state to DB after enough durable progress has accumulated.
     # 충분한 durable progress 가 쌓였을 때만 retry 상태를 DB 에 기록한다.
     def _checkpoint_retry_state(self, broker, retry_state, flushed_points,
                                 force=False):
@@ -464,13 +455,10 @@ class ContainerSync(Daemon):
                 next_sync_point = None
                 sync_stage_time = start_at
                 try:
-                    # Retry old rows using per-partition progress.
                     # retry partition 별 progress 로 이전에 건너뛴 row 를 재시도한다.
-                    # Keep execution ownership separate from progress storage.
                     # partition 은 row 담당 구역이고, 실행 노드와 progress key 를 분리한다.
-                    # Scan each batch once and advance every local partition
-                    # together so we do not rescan the same ROWID range for
-                    # each partition separately.
+                    # 같은 ROWID 구간을 partition 마다 다시 읽지 않도록
+                    # batch 하나를 한 번만 훑으면서 local partition 을 함께 전진시킨다.
                     if sync_point2 < sync_point1:
                         retry_state = self._load_retry_state(broker, nodes)
                         flushed_retry_points = dict(
@@ -487,7 +475,6 @@ class ContainerSync(Daemon):
                                 if partition_state['point'] >= sync_point1:
                                     continue
 
-                                # Let the next node take over a stale partition.
                                 # 담당 partition 이 오래 멈췄으면 다음 노드가 이어받는다.
                                 updated_at = float(
                                     partition_state.get('updated_at') or 0)
@@ -577,7 +564,6 @@ class ContainerSync(Daemon):
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
                     sync_stage_time = time()
-                    # Stream new rows through the local owner while batching DB updates.
                     # 새 row 는 local owner 가 처리하고, DB sync point 갱신은 batch 로 묶는다.
                     pending_new = collections.deque()
                     with ContextPool(self.sync_row_concurrency) as pool:
