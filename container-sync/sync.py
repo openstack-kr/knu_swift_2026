@@ -26,7 +26,6 @@ from urllib.parse import urlparse
 
 import swift.common.db
 from swift.common.db import DatabaseConnectionError
-# Use the broker extension that persists retry progress state.
 # retry progress 상태를 저장하는 broker 확장을 사용한다.
 from swift.container.backend_parallel import ContainerBroker
 from swift.container.sync_store import ContainerSyncStore
@@ -35,9 +34,6 @@ from swift.common.daemon import run_daemon
 from swift.common.internal_client import (
     delete_object, put_object, head_object,
     InternalClient, UnexpectedResponse)
-# Load memcache support for sharing retry progress across nodes.
-# 노드 간 retry progress 공유를 위해 memcache 지원을 불러온다.
-from swift.common.memcached import load_memcache
 from swift.common.exceptions import ClientException
 from swift.common.ring import Ring
 from swift.common.ring.utils import is_local_device
@@ -45,7 +41,6 @@ from swift.common.swob import normalize_etag
 from swift.common.utils import (
     clean_content_type, config_true_value,
     FileLikeIter, get_logger, hash_path, quote, validate_sync_to,
-    # Use a green thread pool for row-level parallel work.
     # row 단위 병렬 작업에 green thread pool 을 사용한다.
     whataremyips, Timestamp, decode_timestamps, parse_options, ContextPool)
 from swift.common.daemon import Daemon
@@ -208,14 +203,11 @@ class ContainerSync(Daemon):
         swift.common.db.DB_PREALLOCATION = \
             config_true_value(conf.get('db_preallocation', 'f'))
         self.conn_timeout = float(conf.get('conn_timeout', 5))
-        # Configure retry takeover timing and cache state lifetime.
-        # retry takeover 시간과 cache 상태 유지 시간을 설정한다.
+        # retry takeover 시간과 durable checkpoint 간격을 설정한다.
         self.retry_takeover_timeout = float(
             conf.get('retry_takeover_timeout') or self.container_time * 2)
-        self.retry_memcache_ttl = int(
-            max(self.retry_takeover_timeout * 4, 300))
-        self.retry_memcache = load_memcache(conf, self.logger)
-        # Configure row-level concurrency and batch fetch size.
+        self.retry_checkpoint_rows = max(
+            1, int(conf.get('retry_checkpoint_rows') or 100))
         # row 단위 동시성과 batch 조회 크기를 설정한다.
         self.sync_row_concurrency = max(
             1, int(conf.get('sync_row_concurrency') or 8))
@@ -323,7 +315,6 @@ class ContainerSync(Daemon):
                           'point2': sync_point2,
                           'total': max_row})
 
-    # Batch row reads to reduce per-row database churn.
     # row 조회를 batch 로 묶어 row 마다 발생하는 DB 부담을 줄인다.
     def _get_row_batch(self, broker, sync_point, stop_sync_point=None):
         rows = broker.get_items_since(sync_point, self.sync_row_batch_size)
@@ -332,7 +323,6 @@ class ContainerSync(Daemon):
                     if row['ROWID'] <= stop_sync_point]
         return rows
 
-    # Execute a row batch serially or in parallel depending on its size.
     # batch 크기에 따라 직렬 또는 병렬로 row 작업을 실행한다.
     def _run_row_batch(self, rows, sync_to, user_key, broker, info,
                        realm, realm_key):
@@ -353,14 +343,13 @@ class ContainerSync(Daemon):
                 for row in rows]
             return [(row, coro.wait()) for row, coro in coros]
 
+    # 현재 row 의 신규 sync owner 가 이 노드인지 계산한다.
     def _row_is_mine(self, row, info, nodes, ordinal):
         key = hash_path(info['account'], info['container'],
                         row['name'], raw_digest=True)
         return unpack_from('>I', key)[0] % len(nodes) == ordinal
 
-    # Compute which retry partition owns this row.
     # row 가 어느 retry partition 에 속하는지 계산한다.
-    # This partition is only a retry owner id, not Swift container sharding.
     # partition 은 실제 Swift sharding 이 아니라 retry 담당 번호만 의미한다.
     def _retry_partition(self, row, info, nodes):
         key = hash_path(info['account'], info['container'],
@@ -368,84 +357,34 @@ class ContainerSync(Daemon):
         owner_ordinal = unpack_from('>I', key)[0] % len(nodes)
         return (owner_ordinal + 1) % len(nodes)
 
-    # Load retry state from DB first, then overlay shared cache progress.
-    # 먼저 DB 에서 retry 상태를 읽고, 공유 cache progress 가 있으면 덮어쓴다.
-    def _load_retry_state(self, broker, info, sync_point1, sync_point2, nodes):
-        retry_state = broker.get_x_container_sync_retry_state(len(nodes))
-        container_hash = hash_path(info['account'], info['container'])
-        # Use a v2-specific key so cache state is not shared with v1.
-        # sync_parallelized.py 의 cache 와 섞이지 않도록 v2 전용 key 를 사용한다.
-        retry_cache_key = 'container-sync/retry-partition-v2/%s/%s/%s' % (
-            container_hash, len(nodes), sync_point1)
+    # retry 상태는 durable 한 DB metadata 에서만 읽는다.
+    def _load_retry_state(self, broker, nodes):
+        return broker.get_x_container_sync_retry_state(len(nodes))
 
-        self.logger.info(
-            '[DEBUG] RETRY KEY %s/%s -> %s (sp1=%s sp2=%s)',
-            info['account'], info['container'],
-            retry_cache_key, sync_point1, sync_point2)
+    # 충분한 durable progress 가 쌓였을 때만 retry 상태를 DB 에 기록한다.
+    def _checkpoint_retry_state(self, broker, retry_state, flushed_points,
+                                force=False):
+        changed = {}
+        for partition_key, partition_state in retry_state.items():
+            point = partition_state['point']
+            previous_point = flushed_points.get(partition_key, -1)
+            if point != previous_point:
+                changed[partition_key] = point
 
-        if not self.retry_memcache:
-            self.logger.info(
-                '[DEBUG] RETRY MEMCACHE disabled for %s/%s',
-                info['account'], info['container'])
-            return retry_state, retry_cache_key, False
+        if not changed:
+            return flushed_points, False
 
-        try:
-            cached_retry_state = self.retry_memcache.get(
-                retry_cache_key, raise_on_error=True)
+        if not force and all(
+                point - flushed_points.get(partition_key, -1) <
+                self.retry_checkpoint_rows
+                for partition_key, point in changed.items()):
+            return flushed_points, False
 
-            self.logger.info(
-                '[DEBUG] LOAD MEMCACHE key=%s value=%s',
-                retry_cache_key, cached_retry_state)
-
-        except Exception:
-            self.logger.exception(
-                'ERROR loading retry state from memcache for %s/%s',
-                info['account'], info['container'])
-            return retry_state, retry_cache_key, False
-
-        if cached_retry_state:
-            cached_retry_state = broker._normalize_retry_state(
-                cached_retry_state, len(nodes))
-            retry_state = {
-                str(retry_ordinal): max(
-                    retry_state[str(retry_ordinal)],
-                    cached_retry_state[str(retry_ordinal)],
-                    key=lambda state: state['point'])
-                for retry_ordinal in range(len(nodes))}
-        else:
-            use_memcache = self._store_retry_state(
-                broker, retry_state, retry_cache_key, True)
-            return retry_state, retry_cache_key, use_memcache
-
-        return retry_state, retry_cache_key, True
-
-    # Store retry state in memcache when available, then persist to DB if needed.
-    # 가능하면 memcache 에 retry 상태를 저장하고, 필요하면 DB 에도 기록한다.
-    def _store_retry_state(self, broker, retry_state, retry_cache_key,
-                           use_memcache, force_db=False):
-        if use_memcache and self.retry_memcache:
-            try:
-                self.logger.info(
-                    '[DEBUG] STORE MEMCACHE key=%s state=%s force_db=%s',
-                    retry_cache_key, retry_state, force_db)
-
-                self.retry_memcache.set(
-                    retry_cache_key, retry_state,
-                    time=self.retry_memcache_ttl, raise_on_error=True)
-
-                if not force_db:
-                    return True
-
-            except Exception:
-                self.logger.exception(
-                    'ERROR storing retry state to memcache')
-
-        self.logger.info(
-            '[DEBUG] STORE DB state=%s key=%s',
-            retry_state, retry_cache_key)
-
+        self.logger.info('[DEBUG] STORE DB retry state=%s', retry_state)
         broker.set_x_container_sync_retry_state(retry_state)
-        return False
+        return dict((partition_key, partition_state['point'])
+                    for partition_key, partition_state in
+                    retry_state.items()), True
 
     def container_sync(self, path):
         """
@@ -516,18 +455,18 @@ class ContainerSync(Daemon):
                 next_sync_point = None
                 sync_stage_time = start_at
                 try:
-                    # Retry old rows using per-partition progress.
                     # retry partition 별 progress 로 이전에 건너뛴 row 를 재시도한다.
-                    # Keep execution ownership separate from progress storage.
                     # partition 은 row 담당 구역이고, 실행 노드와 progress key 를 분리한다.
-                    # Scan each batch once and advance every local partition
-                    # together so we do not rescan the same ROWID range for
-                    # each partition separately.
+                    # 같은 ROWID 구간을 partition 마다 다시 읽지 않도록
+                    # batch 하나를 한 번만 훑으면서 local partition 을 함께 전진시킨다.
                     if sync_point2 < sync_point1:
-                        retry_state, retry_cache_key, use_retry_memcache = \
-                            self._load_retry_state(
-                                broker, info, sync_point1, sync_point2, nodes)
-                        while time() < stop_at:
+                        retry_state = self._load_retry_state(broker, nodes)
+                        flushed_retry_points = dict(
+                            (partition_key, partition_state['point'])
+                            for partition_key, partition_state in
+                            retry_state.items())
+                        retry_halted = False
+                        while time() < stop_at and not retry_halted:
                             batch_now = time()
                             active_partitions = {}
                             for partition in range(len(nodes)):
@@ -536,7 +475,6 @@ class ContainerSync(Daemon):
                                 if partition_state['point'] >= sync_point1:
                                     continue
 
-                                # Let the next node take over a stale partition.
                                 # 담당 partition 이 오래 멈췄으면 다음 노드가 이어받는다.
                                 updated_at = float(
                                     partition_state.get('updated_at') or 0)
@@ -565,6 +503,10 @@ class ContainerSync(Daemon):
                                 (row, self._retry_partition(
                                     row, info, nodes))
                                 for row in rows]
+                            previous_points = dict(
+                                (partition, partition_state['point'])
+                                for partition, partition_state in
+                                active_partitions.items())
                             retry_rows_to_sync = [
                                 row for row, row_partition
                                 in rows_with_partitions
@@ -577,6 +519,10 @@ class ContainerSync(Daemon):
                                     retry_rows_to_sync, sync_to, user_key,
                                     broker, info, realm, realm_key)}
 
+                            # 실패 row 를 만나면 그 partition 은 이번 run 에서
+                            # 더 이상 point 를 전진시키지 않는다.
+                            # point 는 "연속적으로 안전하게 끝난 마지막 ROWID" 여야 하므로
+                            # 실패 지점을 건너뛰고 뒤 row 까지 완료 처리하면 안 된다.
                             blocked_partitions = set()
                             for row, row_partition in rows_with_partitions:
                                 rowid = row['ROWID']
@@ -589,32 +535,44 @@ class ContainerSync(Daemon):
                                     if row_partition == partition:
                                         success = retry_results[rowid]
                                         if not success:
+                                            # 이 partition 은 현재 row 에서 멈춘 상태로 남기고
+                                            # 다음 run 에서 같은 point 부터 다시 retry 한다.
                                             blocked_partitions.add(partition)
                                             continue
 
                                     partition_state['point'] = rowid
 
+                            state_changed = False
                             updated_at = time()
                             for partition, partition_state in \
                                     active_partitions.items():
-                                retry_state[str(partition)] = {
-                                    'point': partition_state['point'],
-                                    'updated_at': updated_at,
-                                }
-                            self._store_retry_state(
-                                broker, retry_state, retry_cache_key,
-                                use_retry_memcache)
+                                if partition_state['point'] > \
+                                        previous_points[partition]:
+                                    partition_state['updated_at'] = updated_at
+                                    state_changed = True
+                                retry_state[str(partition)] = partition_state
 
-                        self._store_retry_state(
-                            broker, retry_state, retry_cache_key,
-                            use_retry_memcache, force_db=True)
+                            if state_changed:
+                                flushed_retry_points, _ = \
+                                    self._checkpoint_retry_state(
+                                        broker, retry_state,
+                                        flushed_retry_points)
+
+                            if blocked_partitions:
+                                # 하나라도 막힌 partition 이 있으면 이번 retry run 은 여기서 멈춘다.
+                                # 끝나기 전에 현재 point 를 flush 하고,
+                                # 다음 run 이 이 지점부터 retry 를 이어받게 한다.
+                                retry_halted = True
+
+                        flushed_retry_points, _ = self._checkpoint_retry_state(
+                            broker, retry_state, flushed_retry_points,
+                            force=True)
                         sync_point2 = min(
                             retry_partition_state['point']
                             for retry_partition_state in retry_state.values())
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
                     sync_stage_time = time()
-                    # Stream new rows through the local owner while batching DB updates.
                     # 새 row 는 local owner 가 처리하고, DB sync point 갱신은 batch 로 묶는다.
                     pending_new = collections.deque()
                     with ContextPool(self.sync_row_concurrency) as pool:
