@@ -519,6 +519,10 @@ class ContainerSync(Daemon):
                                     retry_rows_to_sync, sync_to, user_key,
                                     broker, info, realm, realm_key)}
 
+                            # 실패 row 를 만나면 그 partition 은 이번 run 에서
+                            # 더 이상 point 를 전진시키지 않는다.
+                            # point 는 "연속적으로 안전하게 끝난 마지막 ROWID" 여야 하므로
+                            # 실패 지점을 건너뛰고 뒤 row 까지 완료 처리하면 안 된다.
                             blocked_partitions = set()
                             for row, row_partition in rows_with_partitions:
                                 rowid = row['ROWID']
@@ -531,6 +535,8 @@ class ContainerSync(Daemon):
                                     if row_partition == partition:
                                         success = retry_results[rowid]
                                         if not success:
+                                            # 이 partition 은 현재 row 에서 멈춘 상태로 남기고
+                                            # 다음 run 에서 같은 point 부터 다시 retry 한다.
                                             blocked_partitions.add(partition)
                                             continue
 
@@ -553,6 +559,9 @@ class ContainerSync(Daemon):
                                         flushed_retry_points)
 
                             if blocked_partitions:
+                                # 하나라도 막힌 partition 이 있으면 이번 retry run 은 여기서 멈춘다.
+                                # 끝나기 전에 현재 point 를 flush 하고,
+                                # 다음 run 이 이 지점부터 retry 를 이어받게 한다.
                                 retry_halted = True
 
                         flushed_retry_points, _ = self._checkpoint_retry_state(
