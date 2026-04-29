@@ -328,21 +328,26 @@ class ContainerSync(Daemon):
     # batch 크기에 따라 직렬 또는 병렬로 row 작업을 실행한다.
     def _run_row_batch(self, rows, sync_to, user_key, broker, info,
                        realm, realm_key):
+        # 처리할 row 가 없으면 바로 빈 결과를 돌려준다.
         if not rows:
             return []
 
+        # 동시성을 쓰지 않거나 row 가 1개뿐이면 직렬로 바로 실행한다.
         if self.sync_row_concurrency <= 1 or len(rows) == 1:
             return [(row, self.container_sync_row(
                 row, sync_to, user_key, broker, info, realm, realm_key))
                 for row in rows]
 
+        # 병렬 실행 시에는 batch 크기와 동시성 제한 중 더 작은 값만큼만 풀을 연다.
         pool_size = min(self.sync_row_concurrency, len(rows))
         with ContextPool(pool_size) as pool:
             coros = []
             for row in rows:
+                # 각 row 작업을 비동기로 제출해 두고 나중에 결과를 모은다.
                 coros.append((row, pool.spawn(
                     self.container_sync_row, row, sync_to, user_key,
                     broker, info, realm, realm_key)))
+            # 제출한 순서대로 wait 하면서 row 와 성공 여부를 함께 돌려준다.
             return [(row, coro.wait()) for row, coro in coros]
 
     # retry 용 node index 확인: DB 가 올라온 local device 와 현재
@@ -411,6 +416,8 @@ class ContainerSync(Daemon):
             retry_cache_key = self._retry_state_cache_key(
                 info, sync_point1, nodes, node_index)
             try:
+                # memcached 에는 현재 node_index 의 진행상황만 따로 저장한다.
+                # 그래서 batch 마다 다른 노드와 가볍게 공유할 수 있다.
                 self.retry_memcache.set(
                     retry_cache_key, retry_state[str(node_index)],
                     raise_on_error=True)
@@ -418,6 +425,8 @@ class ContainerSync(Daemon):
                 self.logger.exception(
                     'ERROR storing retry state to memcache')
 
+        # DB metadata 에는 전체 retry_state dict 를 checkpoint 로 저장한다.
+        # persist_db=True 일 때만 저장하고, memcached 가 없으면 항상 DB 에 저장한다.
         if persist_db or not self.retry_memcache:
             broker.set_x_container_sync_retry_state(retry_state)
         return retry_state
@@ -505,6 +514,7 @@ class ContainerSync(Daemon):
                         retry_state = broker.get_x_container_sync_retry_state(
                             len(nodes))
                         retry_halted = False
+                        retry_batch_count = 0
 
                         while time() < stop_at and not retry_halted:
                             my_retry_point = retry_state[str(node_index)][
@@ -551,9 +561,11 @@ class ContainerSync(Daemon):
                                 'point': my_retry_point,
                                 'updated_at': time(),
                             }
+                            retry_batch_count += 1
                             retry_state = self._store_retry_state(
                                 broker, retry_state, info, sync_point1,
-                                nodes, node_index, persist_db=True)
+                                nodes, node_index,
+                                persist_db=(retry_batch_count % 5 == 0))
 
                         retry_state = self._store_retry_state(
                             broker, retry_state, info, sync_point1,
