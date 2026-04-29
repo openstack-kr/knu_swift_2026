@@ -591,7 +591,7 @@ class ContainerSync(Daemon):
                                     info['account'], info['container'],
                                     row['name'], raw_digest=True)
                                 if unpack_from('>I', key)[0] % \
-                                        len(nodes) == node_index:
+                                        len(nodes) == ordinal:
                                     pending_new.append((row, pool.spawn(
                                         self.container_sync_row, row, sync_to,
                                         user_key, broker, info, realm,
