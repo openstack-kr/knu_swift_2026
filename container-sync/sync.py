@@ -403,12 +403,13 @@ class ContainerSync(Daemon):
         # 모두 stale 하면 바로 다음 슬롯이 맡도록 한다.
         return (retry_owner_index + 1) % len(nodes)
 
-    # 오래된 progress 가 재사용되지 않도록 retry window 단위로 cache key 를 나눈다.
+    # 오래된 progress 와 섞이지 않도록 retry window 와 owner별
+    # memcache key 를 만든다.
     def _get_retry_state_cache_key(self, info, sync_point1, nodes,
                                    node_index):
-        container_hash = hash_path(info['account'], info['container'])
         return 'container-sync/retry-v6/%s/%s/%s/%s' % (
-            container_hash, len(nodes), sync_point1, node_index)
+            hash_path(info['account'], info['container']),
+            len(nodes), sync_point1, node_index)
 
     # retry loop 중에는 내 owner 상태를 memcache 에 저장한다.
     def _store_retry_state(self, broker, retry_state, info, sync_point1,
@@ -528,16 +529,19 @@ class ContainerSync(Daemon):
                                 break
 
                             batch_now = time()
-                            retry_active_node_indexes = {
-                                row['ROWID']: self._select_retry_owner_index(
+                            # 각 row 마다 이번 batch 에서 실제로 retry 를 맡을
+                            # owner index 를 미리 계산해 함께 들고 간다.
+                            row_retry_owners = [
+                                (row, self._select_retry_owner_index(
                                     row, info, nodes, retry_state,
-                                    sync_point1, batch_now)
+                                    sync_point1, batch_now))
                                 for row in rows
-                            }
+                            ]
+                            # 현재 node_index 가 맡은 row 만 골라 실제 sync 를 수행한다.
                             retry_rows_to_sync = [
-                                row for row in rows
-                                if retry_active_node_indexes[row['ROWID']] ==
-                                node_index
+                                row for row, retry_owner_index
+                                in row_retry_owners
+                                if retry_owner_index == node_index
                             ]
                             retry_results = dict(
                                 (row['ROWID'], success)
@@ -545,9 +549,10 @@ class ContainerSync(Daemon):
                                     retry_rows_to_sync, sync_to, user_key,
                                     broker, info, realm, realm_key))
 
-                            for row in rows:
-                                if retry_active_node_indexes[row['ROWID']] != \
-                                        node_index:
+                            # 이번 node 가 맡지 않은 row 도 progress 계산에는
+                            # 포함해야 하므로 순서대로 훑으면서 point 를 전진시킨다.
+                            for row, retry_owner_index in row_retry_owners:
+                                if retry_owner_index != node_index:
                                     my_retry_point = row['ROWID']
                                     continue
 
