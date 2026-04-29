@@ -2323,12 +2323,8 @@ class ContainerBroker(DatabaseBroker):
         except (TypeError, ValueError):
             retry_state = {}
 
-        normalized = self._normalize_retry_state(
+        return self._normalize_retry_state(
             retry_state, replica_count, now=now)
-        normalized_json = json.dumps(normalized, sort_keys=True)
-        if metadata_value != normalized_json:
-            self.set_x_container_sync_retry_state(normalized)
-        return normalized
 
     def set_x_container_sync_retry_state(self, retry_state):
         normalized = self._normalize_retry_state(
