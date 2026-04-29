@@ -383,8 +383,8 @@ class ContainerSync(Daemon):
         # retry owner 는 row owner 다음 슬롯으로 고정한다.
         key = hash_path(info['account'], info['container'],
                         row['name'], raw_digest=True)
-        owner_node_index = unpack_from('>I', key)[0] % len(nodes)
-        retry_owner_index = (owner_node_index + 1) % len(nodes)
+        row_owner_index = unpack_from('>I', key)[0] % len(nodes)
+        retry_owner_index = (row_owner_index + 1) % len(nodes)
         retry_owner_state = retry_state[str(retry_owner_index)]
         if not self._is_retry_owner_stale(
                 retry_owner_state, sync_point1, now):
@@ -404,7 +404,8 @@ class ContainerSync(Daemon):
         return (retry_owner_index + 1) % len(nodes)
 
     # 오래된 progress 가 재사용되지 않도록 retry window 단위로 cache key 를 나눈다.
-    def _retry_state_cache_key(self, info, sync_point1, nodes, node_index):
+    def _get_retry_state_cache_key(self, info, sync_point1, nodes,
+                                   node_index):
         container_hash = hash_path(info['account'], info['container'])
         return 'container-sync/retry-v6/%s/%s/%s/%s' % (
             container_hash, len(nodes), sync_point1, node_index)
@@ -413,7 +414,7 @@ class ContainerSync(Daemon):
     def _store_retry_state(self, broker, retry_state, info, sync_point1,
                            nodes, node_index, persist_db=False):
         if self.retry_memcache:
-            retry_cache_key = self._retry_state_cache_key(
+            retry_cache_key = self._get_retry_state_cache_key(
                 info, sync_point1, nodes, node_index)
             try:
                 # memcached 에는 현재 node_index 의 진행상황만 따로 저장한다.
@@ -576,7 +577,7 @@ class ContainerSync(Daemon):
                         if sync_point2 >= sync_point1 and self.retry_memcache:
                             # memcached 초기화: sync point2 loop 가 끝나면 owner 별 memcache key 를 한 번씩 정리한다.
                             for retry_node_index in range(len(nodes)):
-                                retry_cache_key = self._retry_state_cache_key(
+                                retry_cache_key = self._get_retry_state_cache_key(
                                     info, sync_point1, nodes,
                                     retry_node_index)
                                 try:
