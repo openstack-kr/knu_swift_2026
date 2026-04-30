@@ -528,6 +528,7 @@ class ContainerSync(Daemon):
                                 break
 
                             # 각 row 마다 이번 batch 에서 실제로 retry 를 맡을 owner index 를 미리 계산
+                            # 이걸 수정할 필요가 있음. sp1과 동일한 로직으로 가도 될 거 같은데
                             row_retry_owners = []
                             for row in rows:
                                 key = hash_path(
@@ -545,35 +546,32 @@ class ContainerSync(Daemon):
                                 in row_retry_owners
                                 if retry_owner_index == node_index
                             ]
-                            retry_results = dict(
-                                (row['ROWID'], success)
-                                for row, success in self._run_row_batch(
+                            retry_results = collections.deque(
+                                success for _, success in self._run_row_batch(
                                     retry_rows_to_sync, sync_to, user_key,
                                     broker, info, realm, realm_key))
 
-                            # 이번 node 가 맡지 않은 row 도 progress 계산에는
-                            # 포함해야 하므로 순서대로 훑으면서 point 를 전진시킨다.
+                            # row 는 순서대로 훑되, 내가 맡은 row 에 대해서만
+                            # 실행 결과를 하나씩 꺼내 본다.
                             for row, retry_owner_index in row_retry_owners:
-                                if retry_owner_index != node_index:
-                                    local_point = row['ROWID']
-                                    continue
-
-                                success = retry_results[row['ROWID']]
-                                if not success:
-                                    retry_halted = True
-                                    next_sync_point = local_point
-                                    break
+                                if retry_owner_index == node_index:
+                                    success = retry_results.popleft()
+                                    if not success:
+                                        retry_halted = True
+                                        next_sync_point = local_point
+                                        break
                                 local_point = row['ROWID']
 
                             local_retry_state = {
                                 'point': local_point,
                                 'updated_at': time(),
                             }
+                            # memcached에 local retry state를 저장
                             self._store_local_retry_state(
                                 info, sync_point1, nodes, node_index,
                                 local_retry_state)
 
-                        # retry loop 가 끝난 뒤에는 memcache 값을 최종 truth 로 모아 DB metadata 에 저장한다.
+                        # retry loop(sp2<sp1)가 끝난 뒤에는 memcache 값을 최종 truth로 모아 DB metadata에 저장
                         final_retry_state = self._read_global_retry_state(
                             broker, info, sync_point1, nodes)
                         broker.set_x_container_sync_retry_state(final_retry_state)
