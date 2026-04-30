@@ -351,7 +351,7 @@ class ContainerSync(Daemon):
             return [(row, coro.wait()) for row, coro in coros]
 
     # node index 확인: DB 가 올라온 local device 와 현재 프로세스의 ip/port 가 동시에 일치하는 nodes 항목을 찾기
-    def _get_self_node_index(self, db_file, nodes):
+    def _get_my_node_index(self, db_file, nodes):
         parts = os.path.normpath(db_file).split(os.sep)
         device = parts[parts.index('node') + 1]
 
@@ -456,7 +456,7 @@ class ContainerSync(Daemon):
             
             # 위 gate 와는 별도로, retry 분배에 쓸 현재 프로세스의
             # 안정적인 self node index 를 device + ip/port 로 구한다.
-            node_index = self._get_self_node_index(
+            node_index = self._get_my_node_index(
                 broker.db_file, nodes)
             if node_index is None:
                 return
