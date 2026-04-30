@@ -367,8 +367,7 @@ class ContainerSync(Daemon):
                 return node_index
         return None
     
-    # retry owner가 아직 맡은 구간을 끝내지 못했고 일정 시간 이상
-    # 갱신이 없으면 stale 한 것으로 본다.
+    # retry owner가 아직 맡은 구간을 끝내지 못했고 일정 시간 이상 갱신이 없으면 stale 한 것으로 본다.
     def _is_retry_owner_stale(self, retry_owner_state, sync_point1, now):
         if retry_owner_state.get('point', -1) >= sync_point1:
             return False
@@ -404,19 +403,12 @@ class ContainerSync(Daemon):
                 takeover_map[retry_owner_index] = retry_owner_index
         return takeover_map
 
-    # 오래된 progress 와 섞이지 않도록 retry window 와 owner별 memcache key 를 만든다.
-    def _get_retry_state_cache_key(self, info, sync_point1, nodes,
-                                   node_index):
-        return 'container-sync/retry-v6/%s/%s/%s/%s' % (
-            hash_path(info['account'], info['container']),
-            len(nodes), sync_point1, node_index)
-
     # memcached에 저장: retry loop 중에는 내 owner 상태만 memcache 에 저장한다.
     def _store_local_retry_state(self, info, sync_point1, nodes, node_index,
                                  local_retry_state):
         if self.retry_memcache:
-            retry_cache_key = self._get_retry_state_cache_key(
-                info, sync_point1, nodes, node_index)
+            retry_cache_key = 'container-sync/%s/%s/%s' % (
+                hash_path(info['account'], info['container']), sync_point1, node_index)
             # memcached 에는 현재 node_index 의 진행상황만 따로 저장한다.
             self.retry_memcache.set(
                 retry_cache_key, local_retry_state, raise_on_error=True)
@@ -426,8 +418,8 @@ class ContainerSync(Daemon):
         final_retry_state = {}
         if self.retry_memcache:
             for retry_node_index in range(len(nodes)):
-                retry_cache_key = self._get_retry_state_cache_key(
-                    info, sync_point1, nodes, retry_node_index)
+                retry_cache_key = 'container-sync/%s/%s/%s' % (
+                    hash_path(info['account'], info['container']), sync_point1, retry_node_index)
                 cached_retry_state = self.retry_memcache.get(
                     retry_cache_key, raise_on_error=True)
                 if not cached_retry_state:
@@ -512,19 +504,18 @@ class ContainerSync(Daemon):
                 next_sync_point = None
                 sync_stage_time = start_at
                 try:
-                    # 이전에 건너뛴 row 를 owner 별 progress 를 사용해 재시도한다.
                     if sync_point2 < sync_point1:
-                        # retry 시작 시점에는 DB metadata 를 기준으로 stale
-                        # 여부와 takeover 정책만 한 번 계산한다.
+                        # retry 시작 시점에는 DB metadata 를 기준으로 stale 여부와 takeover 정책만 한 번 계산
                         retry_snapshot = broker.get_x_container_sync_retry_state(
                             len(nodes))
                         local_retry_state = retry_snapshot[str(node_index)]
                         retry_check_time = time()
-                        # loop 안에서는 이 매핑만 사용한다.
+                        # stale된 노드를 확인하여, takeover map 확정 
+                        # 정상적인 경우 { 0: 0, 1: 1, 2: 2}
+                        # stale된 노드가 1번이면 { 0: 0, 1: 2, 2: 2}
                         takeover_map = \
                             self._build_takeover_map(
-                                nodes, retry_snapshot, sync_point1,
-                                retry_check_time)
+                                nodes, retry_snapshot, sync_point1, retry_check_time)
                         retry_halted = False
 
                         while time() < stop_at and not retry_halted:
@@ -536,8 +527,7 @@ class ContainerSync(Daemon):
                             if not rows:
                                 break
 
-                            # 각 row 마다 이번 batch 에서 실제로 retry 를 맡을
-                            # owner index 를 미리 계산해 함께 들고 간다.
+                            # 각 row 마다 이번 batch 에서 실제로 retry 를 맡을 owner index 를 미리 계산
                             row_retry_owners = []
                             for row in rows:
                                 key = hash_path(
@@ -593,9 +583,8 @@ class ContainerSync(Daemon):
                         if sync_point2 >= sync_point1 and self.retry_memcache:
                             # memcached 초기화: sync point2 loop 가 끝나면 owner 별 memcache key 를 한 번씩 정리한다.
                             for retry_node_index in range(len(nodes)):
-                                retry_cache_key = self._get_retry_state_cache_key(
-                                    info, sync_point1, nodes,
-                                    retry_node_index)
+                                retry_cache_key = 'container-sync/%s/%s/%s' % (
+                                    hash_path(info['account'], info['container']), sync_point1, retry_node_index)
                                 self.retry_memcache.delete(retry_cache_key)
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
