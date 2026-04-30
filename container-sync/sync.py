@@ -350,22 +350,15 @@ class ContainerSync(Daemon):
             # 제출한 순서대로 wait 하면서 row 와 성공 여부를 함께 돌려준다.
             return [(row, coro.wait()) for row, coro in coros]
 
-    # retry 용 node index 확인: DB 가 올라온 local device 와 현재
-    # 프로세스의 ip/port 가 동시에 일치하는 nodes 항목을 찾는다.
+    # node index 확인: DB 가 올라온 local device 와 현재 프로세스의 ip/port 가 동시에 일치하는 nodes 항목을 찾기
     def _get_self_node_index(self, db_file, nodes):
-        path_parts = os.path.normpath(db_file).split(os.sep)
-        try:
-            node_dir_index = path_parts.index('node')
-            local_device = path_parts[node_dir_index + 1]
-        except (ValueError, IndexError):
-            return None
+        parts = os.path.normpath(db_file).split(os.sep)
+        device = parts[parts.index('node') + 1]
 
-        for node_index, node in enumerate(nodes):
-            if (node.get('device') == local_device and
-                    node.get('ip') in self._myips and
-                    node.get('port') == self._myport):
-                return node_index
-        return None
+        return next(
+            i for i, n in enumerate(nodes)
+            if n['device'] == device and n['port'] == self._myport
+        )
     
     # retry owner가 아직 맡은 구간을 끝내지 못했고 일정 시간 이상 갱신이 없으면 stale 한 것으로 본다.
     def _is_retry_owner_stale(self, retry_owner_state, sync_point1, now):
