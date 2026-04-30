@@ -377,32 +377,6 @@ class ContainerSync(Daemon):
             return False
         return now - updated_at >= self.retry_takeover_timeout
 
-    # 지정된 retry owner 가 stale 하지 않으면 그대로 사용한다.
-    def _select_retry_owner_index(self, row, info, nodes, retry_state,
-                                  sync_point1, now):
-        # retry owner 는 row owner 다음 슬롯으로 고정한다.
-        key = hash_path(info['account'], info['container'],
-                        row['name'], raw_digest=True)
-        row_owner_index = unpack_from('>I', key)[0] % len(nodes)
-        retry_owner_index = (row_owner_index + 1) % len(nodes)
-        retry_owner_state = retry_state[str(retry_owner_index)]
-        if not self._is_retry_owner_stale(
-                retry_owner_state, sync_point1, now):
-            return retry_owner_index
-
-        # 기본 retry owner 가 stale 하면 다음 슬롯들 중 살아 있는 쪽으로 넘긴다.
-        for offset in range(1, len(nodes)):
-            retry_candidate_node_index = (retry_owner_index + offset) % \
-                len(nodes)
-            retry_owner_state = retry_state[
-                str(retry_candidate_node_index)]
-            if not self._is_retry_owner_stale(
-                    retry_owner_state, sync_point1, now):
-                return retry_candidate_node_index
-
-        # 모두 stale 하면 바로 다음 슬롯이 맡도록 한다.
-        return (retry_owner_index + 1) % len(nodes)
-
     # 오래된 progress 와 섞이지 않도록 retry window 와 owner별
     # memcache key 를 만든다.
     def _get_retry_state_cache_key(self, info, sync_point1, nodes,
@@ -411,27 +385,46 @@ class ContainerSync(Daemon):
             hash_path(info['account'], info['container']),
             len(nodes), sync_point1, node_index)
 
-    # retry loop 중에는 내 owner 상태를 memcache 에 저장한다.
-    def _store_retry_state(self, broker, retry_state, info, sync_point1,
-                           nodes, node_index, persist_db=False):
+    # owner 선택이나 SP2 계산에 쓸 계산용 snapshot 을 그때그때 다시 만든다.
+    def _load_retry_snapshot(self, broker, info, sync_point1, nodes):
+        retry_snapshot = broker.get_x_container_sync_retry_state(len(nodes))
+        if not self.retry_memcache:
+            return retry_snapshot
+
+        for retry_node_index in range(len(nodes)):
+            retry_cache_key = self._get_retry_state_cache_key(
+                info, sync_point1, nodes, retry_node_index)
+            try:
+                cached_retry_state = self.retry_memcache.get(
+                    retry_cache_key, raise_on_error=True)
+            except Exception:
+                self.logger.exception(
+                    'ERROR loading retry state from memcache for key %s',
+                    retry_cache_key)
+                continue
+            if not cached_retry_state:
+                continue
+
+            cached_retry_state = broker._normalize_retry_state(
+                {str(retry_node_index): cached_retry_state}, len(nodes))
+            retry_snapshot[str(retry_node_index)] = \
+                cached_retry_state[str(retry_node_index)]
+        return retry_snapshot
+
+    # retry loop 중에는 내 owner 상태만 memcache 에 저장한다.
+    def _store_local_retry_state(self, info, sync_point1, nodes, node_index,
+                                 local_retry_state):
         if self.retry_memcache:
             retry_cache_key = self._get_retry_state_cache_key(
                 info, sync_point1, nodes, node_index)
             try:
                 # memcached 에는 현재 node_index 의 진행상황만 따로 저장한다.
-                # 그래서 batch 마다 다른 노드와 가볍게 공유할 수 있다.
                 self.retry_memcache.set(
-                    retry_cache_key, retry_state[str(node_index)],
+                    retry_cache_key, local_retry_state,
                     raise_on_error=True)
             except Exception:
                 self.logger.exception(
                     'ERROR storing retry state to memcache')
-
-        # DB metadata 에는 전체 retry_state dict 를 checkpoint 로 저장한다.
-        # persist_db=True 일 때만 저장하고, memcached 가 없으면 항상 DB 에 저장한다.
-        if persist_db or not self.retry_memcache:
-            broker.set_x_container_sync_retry_state(retry_state)
-        return retry_state
 
     def container_sync(self, path):
         """
@@ -512,31 +505,64 @@ class ContainerSync(Daemon):
                 try:
                     # 이전에 건너뛴 row 를 owner 별 progress 를 사용해 재시도한다.
                     if sync_point2 < sync_point1:
-                        # retry 시작점은 DB metadata 에 저장된 owner 상태를 기준으로 잡는다.
-                        retry_state = broker.get_x_container_sync_retry_state(
-                            len(nodes))
+                        # retry 시작 시점에만 전체 snapshot을 읽어 stale 여부를 본다.
+                        retry_snapshot = self._load_retry_snapshot(
+                            broker, info, sync_point1, nodes)
+                        local_retry_state = retry_snapshot[str(node_index)]
+                        retry_check_time = time()
+                        # loop 전에 기본 retry owner 별 최종 담당 owner 를
+                        # 한 번만 확정해 두고, loop 안에서는 이 매핑만 쓴다.
+                        retry_owner_index_map = {}
+                        for retry_owner_index in range(len(nodes)):
+                            retry_owner_state = retry_snapshot[
+                                str(retry_owner_index)]
+                            if self._is_retry_owner_stale(
+                                    retry_owner_state, sync_point1,
+                                    retry_check_time):
+                                # 기본 retry owner 가 stale 하면 다음 live
+                                # owner 를 찾고, 없으면 바로 다음 슬롯을 쓴다.
+                                retry_owner_index_map[retry_owner_index] = \
+                                    (retry_owner_index + 1) % len(nodes)
+                                for offset in range(1, len(nodes)):
+                                    retry_candidate_node_index = \
+                                        (retry_owner_index + offset) % \
+                                        len(nodes)
+                                    retry_owner_state = retry_snapshot[
+                                        str(retry_candidate_node_index)]
+                                    if not self._is_retry_owner_stale(
+                                            retry_owner_state, sync_point1,
+                                            retry_check_time):
+                                        retry_owner_index_map[
+                                            retry_owner_index] = \
+                                            retry_candidate_node_index
+                                        break
+                            else:
+                                retry_owner_index_map[
+                                    retry_owner_index] = retry_owner_index
                         retry_halted = False
-                        retry_batch_count = 0
 
                         while time() < stop_at and not retry_halted:
-                            my_retry_point = retry_state[str(node_index)][
-                                'point']
-                            if my_retry_point >= sync_point1:
+                            local_point = local_retry_state['point']
+                            if local_point >= sync_point1:
                                 break
                             rows = self._get_row_batch(
-                                broker, my_retry_point, sync_point1)
+                                broker, local_point, sync_point1)
                             if not rows:
                                 break
 
-                            batch_now = time()
                             # 각 row 마다 이번 batch 에서 실제로 retry 를 맡을
                             # owner index 를 미리 계산해 함께 들고 간다.
-                            row_retry_owners = [
-                                (row, self._select_retry_owner_index(
-                                    row, info, nodes, retry_state,
-                                    sync_point1, batch_now))
-                                for row in rows
-                            ]
+                            row_retry_owners = []
+                            for row in rows:
+                                key = hash_path(
+                                    info['account'], info['container'],
+                                    row['name'], raw_digest=True)
+                                row_owner_index = unpack_from('>I', key)[0] % \
+                                    len(nodes)
+                                retry_owner_index = retry_owner_index_map[
+                                    (row_owner_index + 1) % len(nodes)]
+                                row_retry_owners.append(
+                                    (row, retry_owner_index))
                             # 현재 node_index 가 맡은 row 만 골라 실제 sync 를 수행한다.
                             retry_rows_to_sync = [
                                 row for row, retry_owner_index
@@ -553,32 +579,33 @@ class ContainerSync(Daemon):
                             # 포함해야 하므로 순서대로 훑으면서 point 를 전진시킨다.
                             for row, retry_owner_index in row_retry_owners:
                                 if retry_owner_index != node_index:
-                                    my_retry_point = row['ROWID']
+                                    local_point = row['ROWID']
                                     continue
 
                                 success = retry_results[row['ROWID']]
                                 if not success:
                                     retry_halted = True
-                                    next_sync_point = my_retry_point
+                                    next_sync_point = local_point
                                     break
-                                my_retry_point = row['ROWID']
+                                local_point = row['ROWID']
 
-                            retry_state[str(node_index)] = {
-                                'point': my_retry_point,
+                            local_retry_state = {
+                                'point': local_point,
                                 'updated_at': time(),
                             }
-                            retry_batch_count += 1
-                            retry_state = self._store_retry_state(
-                                broker, retry_state, info, sync_point1,
-                                nodes, node_index,
-                                persist_db=(retry_batch_count % 5 == 0))
+                            # retry_snapshot[str(node_index)] = local_retry_state
+                            self._store_local_retry_state(
+                                info, sync_point1, nodes, node_index,
+                                local_retry_state)
 
-                        retry_state = self._store_retry_state(
-                            broker, retry_state, info, sync_point1,
-                            nodes, node_index, persist_db=True)
+                        # retry loop 가 끝난 뒤에만 최종 snapshot을 DB metadata에 저장한다.
+                        final_retry_state = self._load_retry_snapshot(
+                            broker, info, sync_point1, nodes)
+                        broker.set_x_container_sync_retry_state(
+                            final_retry_state)
                         sync_point2 = min(
-                            retry_owner_state['point']
-                            for retry_owner_state in retry_state.values())
+                            state['point']
+                            for state in final_retry_state.values())
                         if sync_point2 >= sync_point1 and self.retry_memcache:
                             # memcached 초기화: sync point2 loop 가 끝나면 owner 별 memcache key 를 한 번씩 정리한다.
                             for retry_node_index in range(len(nodes)):
