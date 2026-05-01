@@ -2293,42 +2293,48 @@ class ContainerBroker(DatabaseBroker):
 
     # 추가된 부분 시작: retry checker 상태 저장/조회 helper 추가
     def _normalize_retry_state(self, retry_state, replica_count, now=None):
-        now = time() if now is None else now
-        normalized = {}
+        normalized_slots = {}
         retry_state = retry_state if isinstance(retry_state, dict) else {}
+        slot_states = retry_state.get('slots', retry_state)
+        if not isinstance(slot_states, dict):
+            slot_states = {}
+
         for ordinal in range(replica_count):
             key = str(ordinal)
-            checker_state = retry_state.get(key, {})
+            checker_state = slot_states.get(key, {})
             if not isinstance(checker_state, dict):
                 checker_state = {}
             try:
                 point = int(checker_state.get('point', -1))
             except (TypeError, ValueError):
                 point = -1
-            try:
-                updated_at = float(checker_state.get('updated_at', now))
-            except (TypeError, ValueError):
-                updated_at = now
-            normalized[key] = {
+            normalized_slots[key] = {
                 'point': point,
-                'updated_at': updated_at,
             }
-        return normalized
+
+        try:
+            run_index = int(retry_state.get('run_index', 0))
+        except (TypeError, ValueError):
+            run_index = 0
+        return {
+            'slots': normalized_slots,
+            'run_index': max(0, run_index),
+        }
 
     def get_x_container_sync_retry_state(self, replica_count):
         metadata_value = self.metadata.get(RETRY_STATE_KEY, ('', None))[0]
-        now = time()
         try:
             retry_state = json.loads(metadata_value) if metadata_value else {}
         except (TypeError, ValueError):
             retry_state = {}
 
         return self._normalize_retry_state(
-            retry_state, replica_count, now=now)
+            retry_state, replica_count)
 
     def set_x_container_sync_retry_state(self, retry_state):
+        slot_states = retry_state.get('slots', retry_state)
         normalized = self._normalize_retry_state(
-            retry_state, len(retry_state))
+            retry_state, len(slot_states))
         self.update_metadata({
             RETRY_STATE_KEY: (
                 json.dumps(normalized, sort_keys=True),

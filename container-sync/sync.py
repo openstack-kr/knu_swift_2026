@@ -34,7 +34,6 @@ from swift.common.daemon import run_daemon
 from swift.common.internal_client import (
     delete_object, put_object, head_object,
     InternalClient, UnexpectedResponse)
-# 노드 간 retry progress 공유를 위해 memcache 지원을 불러온다.
 from swift.common.memcached import load_memcache
 from swift.common.exceptions import ClientException
 from swift.common.ring import Ring
@@ -196,7 +195,6 @@ class ContainerSync(Daemon):
         #: Time of last stats report.
         self.reported = time()
         self.swift_dir = conf.get('swift_dir', '/etc/swift')
-        #: swift.common.ring.Ring for locating containers.
         self.container_ring = container_ring or Ring(self.swift_dir,
                                                      ring_name='container')
         bind_ip = conf.get('bind_ip', '0.0.0.0')
@@ -205,9 +203,6 @@ class ContainerSync(Daemon):
         swift.common.db.DB_PREALLOCATION = \
             config_true_value(conf.get('db_preallocation', 'f'))
         self.conn_timeout = float(conf.get('conn_timeout', 5))
-        # retry takeover 시간과 cache 사용 방식을 설정한다.
-        self.retry_takeover_timeout = float(
-            conf.get('retry_takeover_timeout') or self.container_time * 2)
         self.retry_memcache = load_memcache(conf, self.logger)
         # row 단위 동시성과 batch 조회 크기를 설정한다.
         self.sync_row_concurrency = max(
@@ -360,70 +355,54 @@ class ContainerSync(Daemon):
             if n['device'] == device and n['port'] == self._myport
         )
  
-    # retry owner가 아직 맡은 구간을 끝내지 못했고 일정 시간 이상 갱신이 없으면 stale 한 것으로 본다.
-    def _is_retry_owner_stale(self, retry_owner_state, sync_point1, now):
-        if retry_owner_state.get('point', -1) >= sync_point1:
-            return False
-        updated_at = float(retry_owner_state.get('updated_at') or 0)
-        if updated_at <= 0:
-            return False
-        return now - updated_at >= self.retry_takeover_timeout
+    def _merge_retry_states(self, current_state, update_state, replica_count):
+        return {
+            'slots': {
+                str(retry_owner_index): {
+                    'point': max(
+                        current_state['slots'][str(retry_owner_index)]['point'],
+                        update_state['slots'][str(retry_owner_index)]['point'])
+                }
+                for retry_owner_index in range(replica_count)
+            },
+            'run_index': max(
+                current_state['run_index'], update_state['run_index']),
+        }
 
-    # retry owner slot을 실제로 takeover할 노드를 결정한다.
-    def _get_retry_takeover_index(self, retry_owner_index, retry_snapshot,
-                                  sync_point1, retry_check_time,
-                                  replica_count):
-        for offset in range(replica_count):
-            retry_candidate_node_index = \
-                (retry_owner_index + offset) % replica_count
-            retry_owner_state = retry_snapshot[
-                str(retry_candidate_node_index)]
-            if not self._is_retry_owner_stale(
-                    retry_owner_state, sync_point1, retry_check_time):
-                return retry_candidate_node_index
-        return retry_owner_index
+    def _read_retry_state(self, broker, retry_state_cache_key, replica_count):
+        retry_state = broker.get_x_container_sync_retry_state(replica_count)
+        retry_round_cache_key = '%s/run-index' % retry_state_cache_key
+        cached_retry_state = self.retry_memcache.get(
+            retry_state_cache_key, raise_on_error=True)
+        if isinstance(cached_retry_state, dict):
+            retry_state = self._merge_retry_states(
+                retry_state,
+                broker._normalize_retry_state(
+                    cached_retry_state, replica_count),
+                replica_count)
+        try:
+            retry_state['run_index'] = max(
+                retry_state['run_index'],
+                int(self.retry_memcache.get(
+                    retry_round_cache_key, raise_on_error=True) or 0))
+        except (TypeError, ValueError):
+            pass
+        return retry_state
 
-    # memcached에 저장: retry loop 중에는 owner slot별 진행상황을 저장한다.
-    def _store_local_retry_state(self, info, sync_point1, retry_owner_index,
-                                 local_retry_state):
-        if self.retry_memcache:
-            retry_cache_key = 'container-sync/%s/%s/%s' % (
-                hash_path(info['account'], info['container']),
-                sync_point1, retry_owner_index)
-            # memcached 에는 retry owner slot 별 진행상황을 따로 저장한다.
-            self.retry_memcache.set(
-                retry_cache_key, local_retry_state, raise_on_error=True)
-
-    # memcache를 읽기: owner별 retry 상태를 읽어 전역 retry 상태를 만든다.
-    def _read_global_retry_state(self, broker, info, sync_point1, nodes):
-        final_retry_state = broker.get_x_container_sync_retry_state(
-            len(nodes))
-        if self.retry_memcache:
-            for retry_node_index in range(len(nodes)):
-                retry_cache_key = 'container-sync/%s/%s/%s' % (
-                    hash_path(info['account'], info['container']),
-                    sync_point1, retry_node_index)
-                cached_retry_state = self.retry_memcache.get(
-                    retry_cache_key, raise_on_error=True)
-                if not isinstance(cached_retry_state, dict):
-                    continue
-
-                retry_state = final_retry_state[str(retry_node_index)]
-                try:
-                    cached_point = int(cached_retry_state.get('point'))
-                except (TypeError, ValueError):
-                    cached_point = retry_state['point']
-                try:
-                    cached_updated_at = float(
-                        cached_retry_state.get('updated_at'))
-                except (TypeError, ValueError):
-                    cached_updated_at = retry_state['updated_at']
-
-                retry_state['point'] = max(
-                    retry_state['point'], cached_point)
-                retry_state['updated_at'] = max(
-                    retry_state['updated_at'], cached_updated_at)
-        return final_retry_state
+    def _store_retry_state(self, broker, retry_state_cache_key, retry_state,
+                           replica_count):
+        retry_state = self._merge_retry_states(
+            self._read_retry_state(broker, retry_state_cache_key,
+                                   replica_count),
+            retry_state, replica_count)
+        retry_state['run_index'] = max( retry_state['run_index'],
+            int(self.retry_memcache.incr(
+                '%s/run-index' % retry_state_cache_key, delta=1,
+                time=max(int(self.interval * 4), 1))))
+        self.retry_memcache.set(
+            retry_state_cache_key, retry_state, raise_on_error=True)
+        broker.set_x_container_sync_retry_state(retry_state)
+        return retry_state
 
     def container_sync(self, path):
         """
@@ -499,27 +478,29 @@ class ContainerSync(Daemon):
                     return
                 start_at = time()
                 stop_at = start_at + self.container_time
+                retry_state_cache_key = 'container-sync/state/%s/%s' % (
+                    hash_path(info['account'], info['container']),
+                    sync_point1)
                 next_sync_point = None
                 sync_stage_time = start_at
                 try:
                     if sync_point2 < sync_point1:
-                        # retry 시작 시점에는 DB metadata 를 기준으로 stale 여부와 takeover 정책만 한 번 계산
-                        retry_snapshot = broker.get_x_container_sync_retry_state(
-                            len(nodes))
-                        retry_check_time = time()
+                        # retry round 상태를 읽고, 현재 round에서 내가 맡은
+                        # owner slot만 처리한다.
+                        retry_state = self._read_retry_state(
+                            broker, retry_state_cache_key, len(nodes))
                         for retry_owner_index in range(len(nodes)):
-                            if self._get_retry_takeover_index(
-                                    retry_owner_index, retry_snapshot,
-                                    sync_point1, retry_check_time,
+                            if ((retry_owner_index +
+                                 retry_state['run_index']) %
                                     len(nodes)) != node_index:
                                 continue
 
-                            local_retry_state = retry_snapshot[
-                                str(retry_owner_index)]
+                            slot_key = str(retry_owner_index)
+                            local_point = retry_state['slots'][
+                                slot_key]['point']
                             retry_halted = False
 
                             while time() < stop_at and not retry_halted:
-                                local_point = local_retry_state['point']
                                 if local_point >= sync_point1:
                                     break
                                 rows = self._get_row_batch(
@@ -559,30 +540,17 @@ class ContainerSync(Daemon):
                                             break
                                     local_point = row['ROWID']
 
-                                local_retry_state = {
-                                    'point': local_point,
-                                    'updated_at': time(),
-                                }
-                                retry_snapshot[str(
-                                    retry_owner_index)] = local_retry_state
-                                # memcached에는 처리한 owner slot 진행상황을 저장한다.
-                                self._store_local_retry_state(
-                                    info, sync_point1, retry_owner_index,
-                                    local_retry_state)
+                            retry_state['slots'][slot_key]['point'] = \
+                                local_point
 
-                        # retry loop(sp2<sp1)가 끝난 뒤에는 memcache 값을 최종 truth로 모아 DB metadata에 저장
-                        final_retry_state = self._read_global_retry_state(
-                            broker, info, sync_point1, nodes)
-                        broker.set_x_container_sync_retry_state(final_retry_state)
+                        # retry loop(sp2<sp1)가 끝난 뒤에는 round 상태를
+                        # shared state에 merge 저장하고 다음 round 회전을 준비한다.
+                        retry_state = self._store_retry_state(
+                            broker, retry_state_cache_key, retry_state,
+                            len(nodes))
                         sync_point2 = min(
                             state['point']
-                            for state in final_retry_state.values())
-                        if sync_point2 >= sync_point1 and self.retry_memcache:
-                            # memcached 초기화: sync point2 loop 가 끝나면 owner 별 memcache key 를 한 번씩 정리한다.
-                            for retry_node_index in range(len(nodes)):
-                                retry_cache_key = 'container-sync/%s/%s/%s' % (
-                                    hash_path(info['account'], info['container']), sync_point1, retry_node_index)
-                                self.retry_memcache.delete(retry_cache_key)
+                            for state in retry_state['slots'].values())
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
                     sync_stage_time = time()
