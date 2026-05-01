@@ -478,20 +478,18 @@ class ContainerSync(Daemon):
                     return
                 start_at = time()
                 stop_at = start_at + self.container_time
-                retry_state_cache_key = 'container-sync/state/%s/%s' % (
-                    hash_path(info['account'], info['container']),
-                    sync_point1)
+                retry_state_cache_key = 'container-sync/state/%s' % (
+                    hash_path(info['account'], info['container']))
                 next_sync_point = None
                 sync_stage_time = start_at
                 try:
                     if sync_point2 < sync_point1:
-                        # retry round 상태를 읽고, 현재 round에서 내가 맡은
-                        # owner slot만 처리한다.
+                        # retry round 상태를 읽고, 현재 round에서 내가 맡은 owner slot만 처리한다.
                         retry_state = self._read_retry_state(
                             broker, retry_state_cache_key, len(nodes))
+                        rotation_index = retry_state['run_index']
                         for retry_owner_index in range(len(nodes)):
-                            if ((retry_owner_index +
-                                 retry_state['run_index']) %
+                            if ((retry_owner_index + rotation_index) %
                                     len(nodes)) != node_index:
                                 continue
 
