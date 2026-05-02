@@ -312,7 +312,7 @@ class ContainerSync(Daemon):
                           'total': max_row})
 
     
-    # row 조회를 batch 로 묶어 row 마다 발생하는 DB 부담을 줄인다.
+    # row 를 한 번에 여러 개씩 읽는다.
     def _get_row_batch(self, broker, sync_point, stop_sync_point=None):
         rows = broker.get_items_since(sync_point, self.sync_row_batch_size)
         if stop_sync_point is not None:
@@ -320,32 +320,32 @@ class ContainerSync(Daemon):
                     if row['ROWID'] <= stop_sync_point]
         return rows
 
-    # batch 크기에 따라 직렬 또는 병렬로 row 작업을 실행한다.
+    # row 작업을 한 번에 실행한다.
     def _run_row_batch(self, rows, sync_to, user_key, broker, info,
                        realm, realm_key):
-        # 처리할 row 가 없으면 바로 빈 결과를 돌려준다.
+        # 처리할 row 가 없으면 바로 끝낸다.
         if not rows:
             return []
 
-        # 동시성을 쓰지 않거나 row 가 1개뿐이면 직렬로 바로 실행한다.
+        # 병렬이 필요 없으면 바로 실행한다.
         if self.sync_row_concurrency <= 1 or len(rows) == 1:
             return [(row, self.container_sync_row(
                 row, sync_to, user_key, broker, info, realm, realm_key))
                 for row in rows]
 
-        # 병렬 실행 시에는 batch 크기와 동시성 제한 중 더 작은 값만큼만 풀을 연다.
+        # 병렬 실행 수는 row 수와 동시성 제한 중 작은 쪽을 쓴다.
         pool_size = min(self.sync_row_concurrency, len(rows))
         with ContextPool(pool_size) as pool:
             coros = []
             for row in rows:
-                # 각 row 작업을 비동기로 제출해 두고 나중에 결과를 모은다.
+                # 각 row 작업을 먼저 던져 두고 나중에 결과를 모은다.
                 coros.append((row, pool.spawn(
                     self.container_sync_row, row, sync_to, user_key,
                     broker, info, realm, realm_key)))
-            # 제출한 순서대로 wait 하면서 row 와 성공 여부를 함께 돌려준다.
+            # 제출한 순서대로 결과를 모은다.
             return [(row, coro.wait()) for row, coro in coros]
 
-    # node index 확인: DB 가 올라온 local device 와 현재 프로세스의 ip/port 가 동시에 일치하는 nodes 항목을 찾기
+    # 현재 노드가 nodes 에서 몇 번째인지 찾는다.
     def _get_my_node_index(self, db_file, nodes):
         for i, node in enumerate(nodes):
             if is_local_device(self._myips, self._myport,
@@ -353,7 +353,7 @@ class ContainerSync(Daemon):
                 return i
         return None
 
-    # memcached 에서 owner slot별 retry 상태를 읽어 현재 retry_state를 만든다.
+    # memcached 에서 retry 상태를 읽는다.
     def _read_retry_state(self, info, sync_point2, node_count):
         retry_state = {'slots': {}}
         retry_cache_prefix = 'container-sync/slot/%s' % (
@@ -368,14 +368,15 @@ class ContainerSync(Daemon):
                     cached_retry_slot, sync_point2, node_count)
         return retry_state
     
-    # memcached 에서 읽은 slot 상태를 현재 retry window 기준의 기본 형태로 맞춘다.
+    # 읽어 온 retry slot 값을 기본 형태로 맞춘다.
     def _normalize_retry_slot(self, retry_slot, sync_point2, node_count):
         retry_slot = retry_slot or {}
         point = max(sync_point2, retry_slot.get('point', sync_point2))
         round_index = retry_slot.get('round', 0) % node_count
         return {'point': point, 'round': round_index}
     
-    # owner slot 하나의 retry 구간을 target_sync_point1 까지 이어서 처리한다.
+    # owner의 retry_point 를 target_sync_point1 까지 진행한다.
+    # round 는 처리 시작 전에 이미 다음 owner로 넘겨 둔 상태라고 가정한다.
     def _sync_retry_slot(self, owner_index, retry_slot, broker, info,
                          sync_to, user_key, realm, realm_key, stop_at,
                          target_sync_point1, node_count):
@@ -387,39 +388,42 @@ class ContainerSync(Daemon):
             if not rows:
                 break
 
-            owned_rows = [
-                row for row in rows
-                if self._get_row_owner_index(
-                    info, row['name'], node_count) == owner_index]
+            # 각 row 가 내 몫인지 먼저 표시해 둔다.
+            rows_with_owner = [
+                (row, self._get_row_owner_index(
+                    info, row['name'], node_count) == owner_index)
+                for row in rows]
+
+            # 내 몫인 row만 실제 sync 하고, 성공 여부만 순서대로 꺼내 쓴다.
             owned_results = iter(success for _, success in self._run_row_batch(
-                owned_rows, sync_to, user_key, broker, info, realm,
+                [row for row, is_owned in rows_with_owner if is_owned],
+                sync_to, user_key, broker, info, realm,
                 realm_key))
 
-            for row in rows:
-                if self._get_row_owner_index(
-                        info, row['name'], node_count) == owner_index and \
-                        not next(owned_results):
-                    retry_slot['point'] = retry_point
-                    retry_slot['round'] = \
-                        (retry_slot['round'] + 1) % node_count
-                    return retry_slot
+            # retry_point 는 전체 row 순서를 따라가야 한다.
+            # owner 몫이면 결과를 확인하고, 아니면 point 만 넘긴다.
+            for row, is_owned in rows_with_owner:
+                if is_owned:
+                    success = next(owned_results)
+                    if not success:
+                        retry_slot['point'] = retry_point
+                        return retry_slot
                 retry_point = row['ROWID']
 
         retry_slot['point'] = retry_point
+        # 목표 지점까지 끝냈으면 round 를 0으로 되돌리고,
+        # 아니면 처리 시작 전에 올려 둔 round 를 그대로 둔다.
         if retry_slot['point'] >= target_sync_point1:
             retry_slot['round'] = 0
-        else:
-            retry_slot['round'] = \
-                (retry_slot['round'] + 1) % node_count
         return retry_slot
 
-    # row name 해시로 원래 owner slot 번호를 계산한다.
+    # row 이름으로 원래 owner 번호를 계산한다.
     def _get_row_owner_index(self, info, row_name, node_count):
         key = hash_path(
             info['account'], info['container'], row_name, raw_digest=True)
         return unpack_from('>I', key)[0] % node_count
         
-    # 이번 sync 에서 실제로 갱신한 owner slot 상태만 memcached 에 다시 저장한다.
+    # 이번 sync 에서 바뀐 owner 상태만 memcached 에 저장한다.
     def _store_retry_state(self, info, retry_state, updated_owners):
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container']),)
@@ -437,16 +441,6 @@ class ContainerSync(Daemon):
                     normalized_retry_slot, time=retry_cache_ttl)
             retry_state['slots'][str(owner_index)] = normalized_retry_slot
         return retry_state
-
-    # retry window 가 끝나면 memcached 에 남은 slot 상태를 정리한다.
-    def _clear_retry_state(self, info, node_count):
-        if not self.retry_memcache:
-            return
-        retry_cache_prefix = 'container-sync/slot/%s' % (
-            hash_path(info['account'], info['container']),)
-        for owner_index in range(node_count):
-            self.retry_memcache.delete(
-                '%s/%s' % (retry_cache_prefix, owner_index))
 
     def container_sync(self, path):
         """
@@ -543,14 +537,25 @@ class ContainerSync(Daemon):
                             if (owner_index + retry_slot['round']) % \
                                     node_count != node_index:
                                 continue
+                            # 중간에 죽어도 다음 sync 에서 다른 owner가
+                            # 이어받을 수 있게, 처리 시작 전에 round 를
+                            # 먼저 다음 owner로 넘겨 둔다.
+                            retry_slot['round'] = \
+                                (retry_slot['round'] + 1) % node_count
+                            updated_owners.add(owner_index)
 
+                        retry_state = self._store_retry_state(
+                            info, retry_state, updated_owners)
+
+                        for owner_index in updated_owners:
+                            retry_slot = retry_state['slots'][
+                                str(owner_index)]
                             retry_state['slots'][str(owner_index)] = \
                                 self._sync_retry_slot(
                                     owner_index, retry_slot, broker, info,
                                     sync_to, user_key, realm, realm_key,
                                     stop_at, target_sync_point1,
                                     node_count)
-                            updated_owners.add(owner_index)
 
                         retry_state = self._store_retry_state(
                             info, retry_state, updated_owners)
@@ -559,7 +564,6 @@ class ContainerSync(Daemon):
                         if all(state['point'] >= target_sync_point1
                                for state in retry_state['slots'].values()):
                             sync_point2 = target_sync_point1
-                            self._clear_retry_state(info, node_count)
                         else:
                             sync_point2 = min(
                                 state['point']
