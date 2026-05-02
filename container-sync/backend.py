@@ -37,7 +37,6 @@ from swift.common.db import DatabaseBroker, BROKER_TIMEOUT, \
     zero_like, DatabaseAlreadyExists, SQLITE_ARG_LIMIT
 
 DATADIR = 'containers'
-RETRY_STATE_KEY = 'X-Container-Sysmeta-Parallel-Retry-State'
 
 RECORD_TYPE_OBJECT = 'object'
 RECORD_TYPE_SHARD = 'shard'
@@ -2290,57 +2289,6 @@ class ContainerBroker(DatabaseBroker):
         """
         self.update_metadata({'X-Container-Sysmeta-Shard-' + key:
                               (value, Timestamp.now().internal)})
-
-    # 추가된 부분 시작: retry checker 상태 저장/조회 helper 추가
-    def _normalize_retry_state(self, retry_state, replica_count, now=None):
-        normalized_slots = {}
-        retry_state = retry_state if isinstance(retry_state, dict) else {}
-        slot_states = retry_state.get('slots', retry_state)
-        if not isinstance(slot_states, dict):
-            slot_states = {}
-
-        for ordinal in range(replica_count):
-            key = str(ordinal)
-            checker_state = slot_states.get(key, {})
-            if not isinstance(checker_state, dict):
-                checker_state = {}
-            try:
-                point = int(checker_state.get('point', -1))
-            except (TypeError, ValueError):
-                point = -1
-            normalized_slots[key] = {
-                'point': point,
-            }
-
-        try:
-            run_index = int(retry_state.get('run_index', 0))
-        except (TypeError, ValueError):
-            run_index = 0
-        return {
-            'slots': normalized_slots,
-            'run_index': max(0, run_index),
-        }
-
-    def get_x_container_sync_retry_state(self, replica_count):
-        metadata_value = self.metadata.get(RETRY_STATE_KEY, ('', None))[0]
-        try:
-            retry_state = json.loads(metadata_value) if metadata_value else {}
-        except (TypeError, ValueError):
-            retry_state = {}
-
-        return self._normalize_retry_state(
-            retry_state, replica_count)
-
-    def set_x_container_sync_retry_state(self, retry_state):
-        slot_states = retry_state.get('slots', retry_state)
-        normalized = self._normalize_retry_state(
-            retry_state, len(slot_states))
-        self.update_metadata({
-            RETRY_STATE_KEY: (
-                json.dumps(normalized, sort_keys=True),
-                Timestamp.now().internal)
-        })
-    # 추가된 부분 끝: retry checker 상태 저장/조회 helper 추가
 
     def get_sharding_sysmeta_with_timestamps(self):
         """
