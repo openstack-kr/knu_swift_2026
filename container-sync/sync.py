@@ -558,6 +558,8 @@ class ContainerSync(Daemon):
 
                         retry_state = self._store_retry_state(
                             info, retry_state, updated_owners)
+                        retry_state = self._read_retry_state(
+                            info, sync_point2, node_count)
                         if all(state['point'] >= target_sync_point1
                                for state in retry_state['slots'].values()):
                             sync_point2 = target_sync_point1
