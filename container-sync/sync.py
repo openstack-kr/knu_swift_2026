@@ -367,14 +367,14 @@ class ContainerSync(Daemon):
         retry_state = {'slots': {}}
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container']),)
-        for retry_owner_index in range(replica_count):
-            cached_slot_state = None
+        for owner_index in range(replica_count):
+            cached_retry_slot = None
             if self.retry_memcache:
-                cached_slot_state = self.retry_memcache.get(
-                    '%s/%s' % (retry_cache_prefix, retry_owner_index))
-            retry_state['slots'][str(retry_owner_index)] = \
-                self._normalize_retry_slot_state(
-                    cached_slot_state, sync_point2, replica_count)
+                cached_retry_slot = self.retry_memcache.get(
+                    '%s/%s' % (retry_cache_prefix, owner_index))
+            retry_state['slots'][str(owner_index)] = \
+                self._normalize_retry_slot(
+                    cached_retry_slot, sync_point2, replica_count)
         return retry_state
 
     def _store_retry_state(self, info, retry_state, updated_slots):
@@ -384,32 +384,74 @@ class ContainerSync(Daemon):
             int(max(self.interval, self.container_time) * 4), 1)
         replica_count = len(retry_state['slots'])
         for slot_key in updated_slots:
-            retry_owner_index = int(slot_key)
-            normalized_slot_state = self._normalize_retry_slot_state(
+            owner_index = int(slot_key)
+            normalized_retry_slot = self._normalize_retry_slot(
                 retry_state['slots'][slot_key],
                 retry_state['slots'][slot_key]['point'], replica_count)
             if self.retry_memcache:
                 self.retry_memcache.set(
-                    '%s/%s' % (retry_cache_prefix, retry_owner_index),
-                    normalized_slot_state, time=retry_cache_ttl)
-            retry_state['slots'][slot_key] = normalized_slot_state
+                    '%s/%s' % (retry_cache_prefix, owner_index),
+                    normalized_retry_slot, time=retry_cache_ttl)
+            retry_state['slots'][slot_key] = normalized_retry_slot
         return retry_state
 
+    def _normalize_retry_slot(self, retry_slot, sync_point2,
+                              replica_count):
+        retry_slot = retry_slot or {}
+        point = max(sync_point2, retry_slot.get('point', sync_point2))
+        round_index = retry_slot.get('round', 0) % replica_count
+        return {'point': point, 'round': round_index}
+
+    def _row_owner_index(self, info, row_name, replica_count):
+        key = hash_path(
+            info['account'], info['container'], row_name, raw_digest=True)
+        return unpack_from('>I', key)[0] % replica_count
+
+    def _sync_retry_slot(self, owner_index, retry_slot, broker, info,
+                         sync_to, user_key, realm, realm_key, stop_at,
+                         base_sync_point1, replica_count):
+        local_point = retry_slot['point']
+
+        while time() < stop_at and local_point < base_sync_point1:
+            rows = self._get_row_batch(
+                broker, local_point, base_sync_point1)
+            if not rows:
+                break
+
+            owned_rows = [
+                row for row in rows
+                if self._row_owner_index(
+                    info, row['name'], replica_count) == owner_index]
+            owned_results = iter(success for _, success in self._run_row_batch(
+                owned_rows, sync_to, user_key, broker, info, realm,
+                realm_key))
+
+            for row in rows:
+                if self._row_owner_index(
+                        info, row['name'], replica_count) == owner_index and \
+                        not next(owned_results):
+                    retry_slot['point'] = local_point
+                    retry_slot['round'] = \
+                        (retry_slot['round'] + 1) % replica_count
+                    return retry_slot
+                local_point = row['ROWID']
+
+        retry_slot['point'] = local_point
+        if retry_slot['point'] >= base_sync_point1:
+            retry_slot['round'] = 0
+        else:
+            retry_slot['round'] = \
+                (retry_slot['round'] + 1) % replica_count
+        return retry_slot
+    
     def _clear_retry_state(self, info, replica_count):
         if not self.retry_memcache:
             return
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container']),)
-        for retry_owner_index in range(replica_count):
+        for owner_index in range(replica_count):
             self.retry_memcache.delete(
-                '%s/%s' % (retry_cache_prefix, retry_owner_index))
-
-    def _normalize_retry_slot_state(self, slot_state, sync_point2,
-                                    replica_count):
-        slot_state = slot_state or {}
-        point = max(sync_point2, slot_state.get('point', sync_point2))
-        round_index = slot_state.get('round', 0) % replica_count
-        return {'point': point, 'round': round_index}
+                '%s/%s' % (retry_cache_prefix, owner_index))
 
     def container_sync(self, path):
         """
@@ -489,73 +531,32 @@ class ContainerSync(Daemon):
                 sync_stage_time = start_at
                 try:
                     if sync_point2 < sync_point1:
-                        retry_sync_point = sync_point1
+                        replica_count = len(nodes)
+                        base_sync_point1 = sync_point1
                         retry_state = self._read_retry_state(
-                            info, sync_point2, len(nodes))
+                            info, sync_point2, replica_count)
                         updated_slot_keys = set()
-                        for retry_owner_index in range(len(nodes)):
-                            slot_key = str(retry_owner_index)
-                            slot_state = retry_state['slots'][slot_key]
-                            if (retry_owner_index + slot_state['round']) % \
-                                    len(nodes) != node_index:
+                        for owner_index in range(replica_count):
+                            slot_key = str(owner_index)
+                            retry_slot = retry_state['slots'][slot_key]
+                            if (owner_index + retry_slot['round']) % \
+                                    replica_count != node_index:
                                 continue
 
-                            local_point = slot_state['point']
-                            retry_halted = False
-
-                            while time() < stop_at and not retry_halted:
-                                if local_point >= retry_sync_point:
-                                    break
-                                rows = self._get_row_batch(
-                                    broker, local_point, retry_sync_point)
-                                if not rows:
-                                    break
-
-                                # 각 row 마다 원래 owner slot을 계산하고,
-                                # 현재 retry owner slot 몫만 처리한다.
-                                row_is_owned = []
-                                retry_rows_to_sync = []
-                                for row in rows:
-                                    key = hash_path(
-                                        info['account'], info['container'],
-                                        row['name'], raw_digest=True)
-                                    is_owned = (
-                                        unpack_from('>I', key)[0] %
-                                        len(nodes) == retry_owner_index)
-                                    row_is_owned.append(is_owned)
-                                    if is_owned:
-                                        retry_rows_to_sync.append(row)
-
-                                retry_results = collections.deque(
-                                    success for _, success
-                                    in self._run_row_batch(
-                                        retry_rows_to_sync, sync_to, user_key,
-                                        broker, info, realm, realm_key))
-
-                                # row 는 순서대로 훑되, 현재 owner slot 몫에
-                                # 대해서만 실행 결과를 확인한다.
-                                for row, is_owned in zip(rows, row_is_owned):
-                                    if is_owned:
-                                        success = retry_results.popleft()
-                                        if not success:
-                                            retry_halted = True
-                                            break
-                                    local_point = row['ROWID']
-
-                            slot_state['point'] = local_point
-                            if slot_state['point'] >= retry_sync_point:
-                                slot_state['round'] = 0
-                            else:
-                                slot_state['round'] = \
-                                    (slot_state['round'] + 1) % len(nodes)
+                            retry_state['slots'][slot_key] = \
+                                self._sync_retry_slot(
+                                    owner_index, retry_slot, broker, info,
+                                    sync_to, user_key, realm, realm_key,
+                                    stop_at, base_sync_point1,
+                                    replica_count)
                             updated_slot_keys.add(slot_key)
 
                         retry_state = self._store_retry_state(
                             info, retry_state, updated_slot_keys)
-                        if all(state['point'] >= retry_sync_point
+                        if all(state['point'] >= base_sync_point1
                                for state in retry_state['slots'].values()):
-                            sync_point2 = retry_sync_point
-                            self._clear_retry_state(info, len(nodes))
+                            sync_point2 = base_sync_point1
+                            self._clear_retry_state(info, replica_count)
                         else:
                             sync_point2 = min(
                                 state['point']
@@ -829,7 +830,6 @@ class ContainerSync(Daemon):
 
     def select_http_proxy(self):
         return choice(self.http_proxies) if self.http_proxies else None
-
 
 def main():
     conf_file, options = parse_options(once=True)
