@@ -347,19 +347,9 @@ class ContainerSync(Daemon):
 
     # node index 확인: DB 가 올라온 local device 와 현재 프로세스의 ip/port 가 동시에 일치하는 nodes 항목을 찾기
     def _get_my_node_index(self, db_file, nodes):
-        devices_root = os.path.realpath(self.devices)
-        db_path = os.path.realpath(db_file)
-        rel_path = os.path.relpath(db_path, devices_root)
-
-        if rel_path == os.pardir or \
-                rel_path.startswith(os.pardir + os.sep):
-            return None
-
-        device = rel_path.split(os.sep, 1)[0]
-
         for i, node in enumerate(nodes):
-            if node.get('device') == device and \
-                    node.get('port') == self._myport:
+            if is_local_device(self._myips, self._myport,
+                               node['ip'], node['port']):
                 return i
         return None
 
@@ -540,6 +530,12 @@ class ContainerSync(Daemon):
                         target_sync_point1 = sync_point1
                         retry_state = self._read_retry_state(
                             info, sync_point2, node_count)
+                        # memcached 에 모인 slot별 진행점의 최소값으로
+                        # 로컬 sp2 를 먼저 맞춘 뒤 retry 를 이어간다.
+                        sync_point2 = min(
+                            state['point']
+                            for state in retry_state['slots'].values())
+                        broker.set_x_container_sync_points(None, sync_point2)
                         updated_owners = set()
                         for owner_index in range(node_count):
                             retry_slot = retry_state['slots'][
