@@ -362,32 +362,6 @@ class ContainerSync(Daemon):
                     node.get('port') == self._myport:
                 return i
         return None
- 
-    def _normalize_retry_slot_state(self, slot_state, sync_point2,
-                                    replica_count):
-        slot_state = slot_state if isinstance(slot_state, dict) else {}
-        try:
-            point = int(slot_state.get('point', sync_point2))
-        except (TypeError, ValueError):
-            point = sync_point2
-        point = max(sync_point2, point)
-
-        try:
-            round_index = int(slot_state.get('round', 0))
-        except (TypeError, ValueError):
-            round_index = 0
-        round_index %= replica_count
-        return {'point': point, 'round': round_index}
-
-    def _merge_retry_slot_states(self, current_state, update_state):
-        if update_state['point'] > current_state['point']:
-            return update_state
-        if update_state['point'] < current_state['point']:
-            return current_state
-        return {
-            'point': current_state['point'],
-            'round': min(current_state['round'], update_state['round']),
-        }
 
     def _read_retry_state(self, info, sync_point2, replica_count):
         retry_state = {'slots': {}}
@@ -403,28 +377,39 @@ class ContainerSync(Daemon):
                     cached_slot_state, sync_point2, replica_count)
         return retry_state
 
-    def _store_retry_state(self, info, retry_state, sync_point2,
-                           replica_count):
+    def _store_retry_state(self, info, retry_state, updated_slots):
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container']),)
         retry_cache_ttl = max(
             int(max(self.interval, self.container_time) * 4), 1)
-        for retry_owner_index in range(replica_count):
-            slot_key = str(retry_owner_index)
-            merged_slot_state = self._normalize_retry_slot_state(
-                retry_state['slots'][slot_key], sync_point2, replica_count)
+        replica_count = len(retry_state['slots'])
+        for slot_key in updated_slots:
+            retry_owner_index = int(slot_key)
+            normalized_slot_state = self._normalize_retry_slot_state(
+                retry_state['slots'][slot_key],
+                retry_state['slots'][slot_key]['point'], replica_count)
             if self.retry_memcache:
-                cached_slot_state = self.retry_memcache.get(
-                    '%s/%s' % (retry_cache_prefix, retry_owner_index))
-                merged_slot_state = self._merge_retry_slot_states(
-                    self._normalize_retry_slot_state(
-                        cached_slot_state, sync_point2, replica_count),
-                    merged_slot_state)
                 self.retry_memcache.set(
                     '%s/%s' % (retry_cache_prefix, retry_owner_index),
-                    merged_slot_state, time=retry_cache_ttl)
-            retry_state['slots'][slot_key] = merged_slot_state
+                    normalized_slot_state, time=retry_cache_ttl)
+            retry_state['slots'][slot_key] = normalized_slot_state
         return retry_state
+
+    def _clear_retry_state(self, info, replica_count):
+        if not self.retry_memcache:
+            return
+        retry_cache_prefix = 'container-sync/slot/%s' % (
+            hash_path(info['account'], info['container']),)
+        for retry_owner_index in range(replica_count):
+            self.retry_memcache.delete(
+                '%s/%s' % (retry_cache_prefix, retry_owner_index))
+
+    def _normalize_retry_slot_state(self, slot_state, sync_point2,
+                                    replica_count):
+        slot_state = slot_state or {}
+        point = max(sync_point2, slot_state.get('point', sync_point2))
+        round_index = slot_state.get('round', 0) % replica_count
+        return {'point': point, 'round': round_index}
 
     def container_sync(self, path):
         """
@@ -507,6 +492,7 @@ class ContainerSync(Daemon):
                         retry_sync_point = sync_point1
                         retry_state = self._read_retry_state(
                             info, sync_point2, len(nodes))
+                        updated_slot_keys = set()
                         for retry_owner_index in range(len(nodes)):
                             slot_key = str(retry_owner_index)
                             slot_state = retry_state['slots'][slot_key]
@@ -562,19 +548,14 @@ class ContainerSync(Daemon):
                             else:
                                 slot_state['round'] = \
                                     (slot_state['round'] + 1) % len(nodes)
+                            updated_slot_keys.add(slot_key)
 
                         retry_state = self._store_retry_state(
-                            info, retry_state, sync_point2,
-                            len(nodes))
+                            info, retry_state, updated_slot_keys)
                         if all(state['point'] >= retry_sync_point
                                for state in retry_state['slots'].values()):
                             sync_point2 = retry_sync_point
-                            for slot_state in retry_state['slots'].values():
-                                slot_state['point'] = sync_point2
-                                slot_state['round'] = 0
-                            retry_state = self._store_retry_state(
-                                info, retry_state, sync_point2,
-                                len(nodes))
+                            self._clear_retry_state(info, len(nodes))
                         else:
                             sync_point2 = min(
                                 state['point']
