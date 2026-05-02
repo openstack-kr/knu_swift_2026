@@ -353,30 +353,31 @@ class ContainerSync(Daemon):
                 return i
         return None
 
-    # memcached 에서 retry 상태를 읽는다.
+    # memcached 에서 owner slot별 point 와 전역 rotation 을 읽는다.
     def _read_retry_state(self, info, sync_point2, node_count):
-        retry_state = {'slots': {}}
+        retry_state = {'rotation': 0, 'slots': {}}
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container']),)
+        if self.retry_memcache:
+            retry_state['rotation'] = (
+                self.retry_memcache.get('%s/rotation' % retry_cache_prefix) or 0
+            ) % node_count
         for owner_index in range(node_count):
             cached_retry_slot = None
             if self.retry_memcache:
                 cached_retry_slot = self.retry_memcache.get(
                     '%s/%s' % (retry_cache_prefix, owner_index))
             retry_state['slots'][str(owner_index)] = \
-                self._normalize_retry_slot(
-                    cached_retry_slot, sync_point2, node_count)
+                self._normalize_retry_slot(cached_retry_slot, sync_point2)
         return retry_state
     
     # 읽어 온 retry slot 값을 기본 형태로 맞춘다.
-    def _normalize_retry_slot(self, retry_slot, sync_point2, node_count):
+    def _normalize_retry_slot(self, retry_slot, sync_point2):
         retry_slot = retry_slot or {}
         point = max(sync_point2, retry_slot.get('point', sync_point2))
-        round_index = retry_slot.get('round', 0) % node_count
-        return {'point': point, 'round': round_index}
+        return {'point': point}
     
     # owner의 retry_point 를 target_sync_point1 까지 진행한다.
-    # round 는 처리 시작 전에 이미 다음 owner로 넘겨 둔 상태라고 가정한다.
     def _sync_retry_slot(self, owner_index, retry_slot, broker, info,
                          sync_to, user_key, realm, realm_key, stop_at,
                          target_sync_point1, node_count):
@@ -411,10 +412,6 @@ class ContainerSync(Daemon):
                 retry_point = row['ROWID']
 
         retry_slot['point'] = retry_point
-        # 목표 지점까지 끝냈으면 round 를 0으로 되돌리고,
-        # 아니면 처리 시작 전에 올려 둔 round 를 그대로 둔다.
-        if retry_slot['point'] >= target_sync_point1:
-            retry_slot['round'] = 0
         return retry_slot
 
     # row 이름으로 원래 owner 번호를 계산한다.
@@ -423,24 +420,87 @@ class ContainerSync(Daemon):
             info['account'], info['container'], row_name, raw_digest=True)
         return unpack_from('>I', key)[0] % node_count
         
-    # 이번 sync 에서 바뀐 owner 상태만 memcached 에 저장한다.
-    def _store_retry_state(self, info, retry_state, updated_owners):
+    # 이번 sync 에서 바뀐 owner 상태와 전역 rotation 을 memcached 에 저장한다.
+    def _store_retry_state(self, info, retry_state, updated_owners,
+                           store_rotation=False):
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container']),)
         retry_cache_ttl = max(
             int(max(self.interval, self.container_time) * 4), 1)
-        node_count = len(retry_state['slots'])
+        if self.retry_memcache and store_rotation:
+            self.retry_memcache.set(
+                '%s/rotation' % retry_cache_prefix,
+                retry_state['rotation'], time=retry_cache_ttl)
         for owner_index in updated_owners:
             normalized_retry_slot = self._normalize_retry_slot(
                 retry_state['slots'][str(owner_index)],
-                retry_state['slots'][str(owner_index)]['point'],
-                node_count)
+                retry_state['slots'][str(owner_index)]['point'])
             if self.retry_memcache:
                 self.retry_memcache.set(
                     '%s/%s' % (retry_cache_prefix, owner_index),
                     normalized_retry_slot, time=retry_cache_ttl)
             retry_state['slots'][str(owner_index)] = normalized_retry_slot
         return retry_state
+
+    # retry slot 저장 후 전체 상태를 다시 읽고,
+    # 완료면 rotation 을 0으로 되돌리고 아니면 한 번만 올린다.
+    def _finalize_retry_state(self, info, retry_state, sync_point2,
+                              target_sync_point1, node_count, rotation):
+        # 먼저 memcached 의 최신 slot 상태를 다시 읽는다.
+        retry_state = self._read_retry_state(info, sync_point2, node_count)
+        # 모든 owner slot 이 목표 지점까지 끝났으면
+        # sp2 와 slot point 를 모두 target_sync_point1 로 맞추고
+        # 다음 retry window 를 위해 rotation 을 0 으로 되돌린다.
+        if all(state['point'] >= target_sync_point1
+               for state in retry_state['slots'].values()):
+            sync_point2 = target_sync_point1
+            retry_state['rotation'] = 0
+            for owner_index in range(node_count):
+                retry_state['slots'][str(owner_index)] = {
+                    'point': target_sync_point1}
+            retry_state = self._store_retry_state(
+                info, retry_state, list(range(node_count)),
+                store_rotation=True)
+            return sync_point2, retry_state
+
+        # 아직 미완료 slot 이 있으면 현재 공통 진행 지점은 min(point) 다.
+        sync_point2 = min(
+            state['point'] for state in retry_state['slots'].values())
+        if not self.retry_memcache:
+            return sync_point2, retry_state
+
+        # rotation 증가는 한 sync pass 당 한 노드만 하도록 lock 으로 막는다.
+        retry_cache_prefix = 'container-sync/slot/%s' % (
+            hash_path(info['account'], info['container']),)
+        lock_key = '%s/rotation-lock/%s/%s' % (
+            retry_cache_prefix, target_sync_point1, rotation)
+        lock_ttl = max(
+            int(max(self.interval, self.container_time) * 2), 1)
+        lock_value = self.retry_memcache.incr(lock_key, time=lock_ttl)
+        if lock_value != 1:
+            return sync_point2, retry_state
+
+        # lock 을 잡은 노드만 최신 상태를 다시 보고
+        # 완료면 rotation 을 0 으로, 미완료면 rotation 을 한 칸 올린다.
+        retry_state = self._read_retry_state(info, sync_point2, node_count)
+        if all(state['point'] >= target_sync_point1
+               for state in retry_state['slots'].values()):
+            sync_point2 = target_sync_point1
+            retry_state['rotation'] = 0
+            for owner_index in range(node_count):
+                retry_state['slots'][str(owner_index)] = {
+                    'point': target_sync_point1}
+            retry_state = self._store_retry_state(
+                info, retry_state, list(range(node_count)),
+                store_rotation=True)
+        else:
+            sync_point2 = min(
+                state['point'] for state in retry_state['slots'].values())
+            retry_state['rotation'] = (
+                retry_state['rotation'] + 1) % node_count
+            retry_state = self._store_retry_state(
+                info, retry_state, [], store_rotation=True)
+        return sync_point2, retry_state
 
     def container_sync(self, path):
         """
@@ -524,6 +584,7 @@ class ContainerSync(Daemon):
                         target_sync_point1 = sync_point1
                         retry_state = self._read_retry_state(
                             info, sync_point2, node_count)
+                        rotation = retry_state['rotation']
                         # memcached 에 모인 slot별 진행점의 최소값으로
                         # 로컬 sp2 를 먼저 맞춘 뒤 retry 를 이어간다.
                         sync_point2 = min(
@@ -534,40 +595,22 @@ class ContainerSync(Daemon):
                         for owner_index in range(node_count):
                             retry_slot = retry_state['slots'][
                                 str(owner_index)]
-                            if (owner_index + retry_slot['round']) % \
+                            if (owner_index + rotation) % \
                                     node_count != node_index:
                                 continue
-                            # 중간에 죽어도 다음 sync 에서 다른 owner가
-                            # 이어받을 수 있게, 처리 시작 전에 round 를
-                            # 먼저 다음 owner로 넘겨 둔다.
-                            retry_slot['round'] = \
-                                (retry_slot['round'] + 1) % node_count
-                            updated_owners.append(owner_index)
-
-                        retry_state = self._store_retry_state(
-                            info, retry_state, updated_owners)
-
-                        for owner_index in updated_owners:
-                            retry_slot = retry_state['slots'][
-                                str(owner_index)]
                             retry_state['slots'][str(owner_index)] = \
                                 self._sync_retry_slot(
                                     owner_index, retry_slot, broker, info,
                                     sync_to, user_key, realm, realm_key,
                                     stop_at, target_sync_point1,
                                     node_count)
+                            updated_owners.append(owner_index)
 
                         retry_state = self._store_retry_state(
                             info, retry_state, updated_owners)
-                        retry_state = self._read_retry_state(
-                            info, sync_point2, node_count)
-                        if all(state['point'] >= target_sync_point1
-                               for state in retry_state['slots'].values()):
-                            sync_point2 = target_sync_point1
-                        else:
-                            sync_point2 = min(
-                                state['point']
-                                for state in retry_state['slots'].values())
+                        sync_point2, retry_state = self._finalize_retry_state(
+                            info, retry_state, sync_point2,
+                            target_sync_point1, node_count, rotation)
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
                     sync_stage_time = time()
