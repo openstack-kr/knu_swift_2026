@@ -530,7 +530,7 @@ class ContainerSync(Daemon):
                             state['point']
                             for state in retry_state['slots'].values())
                         broker.set_x_container_sync_points(None, sync_point2)
-                        updated_owners = set()
+                        updated_owners = []
                         for owner_index in range(node_count):
                             retry_slot = retry_state['slots'][
                                 str(owner_index)]
@@ -542,7 +542,7 @@ class ContainerSync(Daemon):
                             # 먼저 다음 owner로 넘겨 둔다.
                             retry_slot['round'] = \
                                 (retry_slot['round'] + 1) % node_count
-                            updated_owners.add(owner_index)
+                            updated_owners.append(owner_index)
 
                         retry_state = self._store_retry_state(
                             info, retry_state, updated_owners)
