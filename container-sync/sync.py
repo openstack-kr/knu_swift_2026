@@ -152,6 +152,10 @@ class ContainerSync(Daemon):
         #: to the next one. If a container sync hasn't finished in this time,
         #: it'll just be resumed next scan.
         self.container_time = int(conf.get('container_time', 60))
+        #: Bucket for grouping one `once` pass across nodes that start within
+        #: the same minute, so rotation can advance once per pass instead of
+        #: once per retry window.
+        self.run_id = int(time()) // 60
         #: ContainerSyncCluster instance for validating sync-to values.
         self.realms_conf = ContainerSyncRealms(
             os.path.join(
@@ -442,6 +446,20 @@ class ContainerSync(Daemon):
             retry_state['slots'][str(owner_index)] = normalized_retry_slot
         return retry_state
 
+    def _get_retry_min_point(self, retry_state):
+        return min(state['point'] for state in retry_state['slots'].values())
+
+    def _complete_retry_state(self, info, retry_state,
+                              target_sync_point1, node_count):
+        retry_state['rotation'] = 0
+        for owner_index in range(node_count):
+            retry_state['slots'][str(owner_index)] = {
+                'point': target_sync_point1}
+        retry_state = self._store_retry_state(
+            info, retry_state, list(range(node_count)),
+            store_rotation=True)
+        return target_sync_point1, retry_state
+
     # retry slot 저장 후 전체 상태를 다시 읽고,
     # 완료면 rotation 을 0으로 되돌리고 아니면 한 번만 올린다.
     def _finalize_retry_state(self, info, retry_state, sync_point2,
@@ -453,19 +471,11 @@ class ContainerSync(Daemon):
         # 다음 retry window 를 위해 rotation 을 0 으로 되돌린다.
         if all(state['point'] >= target_sync_point1
                for state in retry_state['slots'].values()):
-            sync_point2 = target_sync_point1
-            retry_state['rotation'] = 0
-            for owner_index in range(node_count):
-                retry_state['slots'][str(owner_index)] = {
-                    'point': target_sync_point1}
-            retry_state = self._store_retry_state(
-                info, retry_state, list(range(node_count)),
-                store_rotation=True)
-            return sync_point2, retry_state
+            return self._complete_retry_state(
+                info, retry_state, target_sync_point1, node_count)
 
         # 아직 미완료 slot 이 있으면 현재 공통 진행 지점은 min(point) 다.
-        sync_point2 = min(
-            state['point'] for state in retry_state['slots'].values())
+        sync_point2 = self._get_retry_min_point(retry_state)
         if not self.retry_memcache:
             return sync_point2, retry_state
 
@@ -473,9 +483,8 @@ class ContainerSync(Daemon):
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container']),)
         lock_key = '%s/rotation-lock/%s/%s' % (
-            retry_cache_prefix, target_sync_point1, rotation)
-        lock_ttl = max(
-            int(max(self.interval, self.container_time) * 2), 1)
+            retry_cache_prefix, target_sync_point1, self.run_id)
+        lock_ttl = 10
         lock_value = self.retry_memcache.incr(lock_key, time=lock_ttl)
         if lock_value != 1:
             return sync_point2, retry_state
@@ -485,17 +494,10 @@ class ContainerSync(Daemon):
         retry_state = self._read_retry_state(info, sync_point2, node_count)
         if all(state['point'] >= target_sync_point1
                for state in retry_state['slots'].values()):
-            sync_point2 = target_sync_point1
-            retry_state['rotation'] = 0
-            for owner_index in range(node_count):
-                retry_state['slots'][str(owner_index)] = {
-                    'point': target_sync_point1}
-            retry_state = self._store_retry_state(
-                info, retry_state, list(range(node_count)),
-                store_rotation=True)
+            return self._complete_retry_state(
+                info, retry_state, target_sync_point1, node_count)
         else:
-            sync_point2 = min(
-                state['point'] for state in retry_state['slots'].values())
+            sync_point2 = self._get_retry_min_point(retry_state)
             retry_state['rotation'] = (
                 retry_state['rotation'] + 1) % node_count
             retry_state = self._store_retry_state(
