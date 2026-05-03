@@ -152,9 +152,9 @@ class ContainerSync(Daemon):
         #: to the next one. If a container sync hasn't finished in this time,
         #: it'll just be resumed next scan.
         self.container_time = int(conf.get('container_time', 60))
-        #: Bucket for grouping one `once` pass across nodes that start within
-        #: the same minute, so rotation can advance once per pass instead of
-        #: once per retry window.
+        #: 같은 분 안에 시작한 once 실행들을 같은 sync pass 로 묶는다.
+        #: retry window 전체가 아니라 pass 마다 rotation 이 한 번씩만
+        #: 오를 수 있게 lock key 에 함께 넣어 쓴다.
         self.run_id = int(time()) // 60
         #: ContainerSyncCluster instance for validating sync-to values.
         self.realms_conf = ContainerSyncRealms(
@@ -446,9 +446,12 @@ class ContainerSync(Daemon):
             retry_state['slots'][str(owner_index)] = normalized_retry_slot
         return retry_state
 
+    # owner slot 들 중 가장 덜 진행된 point 를 구한다.
     def _get_retry_min_point(self, retry_state):
         return min(state['point'] for state in retry_state['slots'].values())
 
+    # retry window 가 모두 끝났을 때
+    # rotation 을 0 으로 되돌리고 slot point 를 목표 지점으로 맞춘다.
     def _complete_retry_state(self, info, retry_state,
                               target_sync_point1, node_count):
         retry_state['rotation'] = 0
@@ -484,6 +487,7 @@ class ContainerSync(Daemon):
             hash_path(info['account'], info['container']),)
         lock_key = '%s/rotation-lock/%s/%s' % (
             retry_cache_prefix, target_sync_point1, self.run_id)
+        # 같은 pass 안에서만 중복 증가를 막으면 되므로 짧게 둔다.
         lock_ttl = 10
         lock_value = self.retry_memcache.incr(lock_key, time=lock_ttl)
         if lock_value != 1:
