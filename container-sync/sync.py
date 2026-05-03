@@ -432,18 +432,15 @@ class ContainerSync(Daemon):
         retry_cache_ttl = max(
             int(max(self.interval, self.container_time) * 4), 1)
         if self.retry_memcache and store_rotation:
-            self.retry_memcache.set(
-                '%s/rotation' % retry_cache_prefix,
-                retry_state['rotation'], time=retry_cache_ttl)
+                self.retry_memcache.set(
+                    '%s/rotation' % retry_cache_prefix,
+                    retry_state['rotation'], time=retry_cache_ttl)
         for owner_index in updated_owners:
-            normalized_retry_slot = self._normalize_retry_slot(
-                retry_state['slots'][str(owner_index)],
-                retry_state['slots'][str(owner_index)]['point'])
+            retry_slot = retry_state['slots'][str(owner_index)]
             if self.retry_memcache:
                 self.retry_memcache.set(
                     '%s/%s' % (retry_cache_prefix, owner_index),
-                    normalized_retry_slot, time=retry_cache_ttl)
-            retry_state['slots'][str(owner_index)] = normalized_retry_slot
+                    retry_slot, time=retry_cache_ttl)
         return retry_state
 
     # owner slot 들 중 가장 덜 진행된 point 를 구한다.
@@ -466,7 +463,7 @@ class ContainerSync(Daemon):
     # retry slot 저장 후 전체 상태를 다시 읽고,
     # 완료면 rotation 을 0으로 되돌리고 아니면 한 번만 올린다.
     def _finalize_retry_state(self, info, retry_state, sync_point2,
-                              target_sync_point1, node_count, rotation):
+                              target_sync_point1, node_count):
         # 먼저 memcached 의 최신 slot 상태를 다시 읽는다.
         retry_state = self._read_retry_state(info, sync_point2, node_count)
         # 모든 owner slot 이 목표 지점까지 끝났으면
@@ -616,7 +613,7 @@ class ContainerSync(Daemon):
                             info, retry_state, updated_owners)
                         sync_point2, retry_state = self._finalize_retry_state(
                             info, retry_state, sync_point2,
-                            target_sync_point1, node_count, rotation)
+                            target_sync_point1, node_count)
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
                     sync_stage_time = time()
