@@ -37,7 +37,6 @@ from swift.common.db import DatabaseBroker, BROKER_TIMEOUT, \
     zero_like, DatabaseAlreadyExists, SQLITE_ARG_LIMIT
 
 DATADIR = 'containers'
-RETRY_STATE_KEY = 'X-Container-Sysmeta-Parallel-Retry-State'
 
 RECORD_TYPE_OBJECT = 'object'
 RECORD_TYPE_SHARD = 'shard'
@@ -2290,55 +2289,6 @@ class ContainerBroker(DatabaseBroker):
         """
         self.update_metadata({'X-Container-Sysmeta-Shard-' + key:
                               (value, Timestamp.now().internal)})
-
-    # 추가된 부분 시작: retry checker 상태 저장/조회 helper 추가
-    def _normalize_retry_state(self, retry_state, replica_count, now=None):
-        now = time() if now is None else now
-        normalized = {}
-        retry_state = retry_state if isinstance(retry_state, dict) else {}
-        for ordinal in range(replica_count):
-            key = str(ordinal)
-            checker_state = retry_state.get(key, {})
-            if not isinstance(checker_state, dict):
-                checker_state = {}
-            try:
-                point = int(checker_state.get('point', -1))
-            except (TypeError, ValueError):
-                point = -1
-            try:
-                updated_at = float(checker_state.get('updated_at', now))
-            except (TypeError, ValueError):
-                updated_at = now
-            normalized[key] = {
-                'point': point,
-                'updated_at': updated_at,
-            }
-        return normalized
-
-    def get_x_container_sync_retry_state(self, replica_count):
-        metadata_value = self.metadata.get(RETRY_STATE_KEY, ('', None))[0]
-        now = time()
-        try:
-            retry_state = json.loads(metadata_value) if metadata_value else {}
-        except (TypeError, ValueError):
-            retry_state = {}
-
-        normalized = self._normalize_retry_state(
-            retry_state, replica_count, now=now)
-        normalized_json = json.dumps(normalized, sort_keys=True)
-        if metadata_value != normalized_json:
-            self.set_x_container_sync_retry_state(normalized)
-        return normalized
-
-    def set_x_container_sync_retry_state(self, retry_state):
-        normalized = self._normalize_retry_state(
-            retry_state, len(retry_state))
-        self.update_metadata({
-            RETRY_STATE_KEY: (
-                json.dumps(normalized, sort_keys=True),
-                Timestamp.now().internal)
-        })
-    # 추가된 부분 끝: retry checker 상태 저장/조회 helper 추가
 
     def get_sharding_sysmeta_with_timestamps(self):
         """
