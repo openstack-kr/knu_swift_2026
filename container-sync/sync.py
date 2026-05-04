@@ -373,6 +373,9 @@ class ContainerSync(Daemon):
             retry_state['slots'][str(owner_index)] = \
                 self._normalize_retry_slot(cached_retry_slot, sync_point2)
         return retry_state
+
+    def _retry_slot_points(self, retry_state):
+        return {k: v['point'] for k, v in retry_state['slots'].items()}
     
     # 읽어 온 retry slot 값을 기본 형태로 맞추기
     def _normalize_retry_slot(self, retry_slot, sync_point2):
@@ -416,6 +419,12 @@ class ContainerSync(Daemon):
                     success = next(owned_results)
                     if not success:
                         retry_slot['point'] = retry_point
+                        self.logger.warning(
+                            '[RETRY_SLOT_FAIL] %s/%s owner=%s point=%s '
+                            'row=%s target=%s',
+                            info['account'], info['container'],
+                            owner_index, retry_point, row['ROWID'],
+                            target_sync_point1)
                         return retry_slot
                 retry_point = row['ROWID']
 
@@ -426,6 +435,11 @@ class ContainerSync(Daemon):
                 batches_since_flush = 0
 
         retry_slot['point'] = retry_point
+        if retry_point < target_sync_point1:
+            self.logger.info(
+                '[RETRY_SLOT_PAUSE] %s/%s owner=%s point=%s target=%s',
+                info['account'], info['container'], owner_index,
+                retry_point, target_sync_point1)
         return retry_slot
 
     # 현재 노드의 point를 memcached에 저장
@@ -589,10 +603,25 @@ class ContainerSync(Daemon):
                         retry_state = self._read_retry_state(
                             info, sync_point2, node_count)
                         rotation = retry_state['rotation']
+                        self.logger.info(
+                            '[RETRY_STATE_READ] %s/%s node_idx=%s rot=%s '
+                            'slots=%s sp1=%s sp2=%s target=%s memcache=%s',
+                            info['account'], info['container'],
+                            node_index, rotation,
+                            self._retry_slot_points(retry_state),
+                            sync_point1, sync_point2, target_sync_point1,
+                            bool(self.retry_memcache))
                         # retry_state를 읽고 로컬 sp2를 최신으로 맞춘다
                         sync_point2 = min(
                             state['point']
                             for state in retry_state['slots'].values())
+                        self.logger.info(
+                            '[RETRY_SP2_UPDATE] %s/%s node_idx=%s rot=%s '
+                            'slots=%s sp2=%s',
+                            info['account'], info['container'],
+                            node_index, rotation,
+                            self._retry_slot_points(retry_state),
+                            sync_point2)
                         broker.set_x_container_sync_points(None, sync_point2)
 
                         # 이번 rotation에서 현재 노드가 맡은 owner slot만 처리
@@ -603,6 +632,12 @@ class ContainerSync(Daemon):
                             if (owner_index + rotation) % \
                                     node_count != node_index:
                                 continue
+                            self.logger.info(
+                                '[RETRY_SLOT_START] %s/%s node_idx=%s '
+                                'owner=%s rot=%s point=%s target=%s',
+                                info['account'], info['container'],
+                                node_index, owner_index, rotation,
+                                retry_slot['point'], target_sync_point1)
                             retry_state['slots'][str(owner_index)] = \
                                 self._sync_retry_slot(
                                     owner_index, retry_slot, broker, info,
@@ -610,17 +645,38 @@ class ContainerSync(Daemon):
                                     stop_at, target_sync_point1,
                                     node_count)
                             updated_owners.append(owner_index)
+                            self.logger.info(
+                                '[RETRY_SLOT_DONE] %s/%s node_idx=%s '
+                                'owner=%s rot=%s point=%s target=%s',
+                                info['account'], info['container'],
+                                node_index, owner_index, rotation,
+                                retry_state['slots'][str(owner_index)]['point'],
+                                target_sync_point1)
 
                         # 이번 sync에서 바뀐 owner slot의 point를 memcached에 저장
                         for owner_index in updated_owners:
                             self._store_retry_slot(
                                 info, owner_index,
                                 retry_state['slots'][str(owner_index)])
+                        if updated_owners:
+                            self.logger.info(
+                                '[RETRY_STATE_STORED] %s/%s node_idx=%s '
+                                'owners=%s rot=%s slots=%s',
+                                info['account'], info['container'],
+                                node_index, updated_owners, rotation,
+                                self._retry_slot_points(retry_state))
 
                         # 최신 retry_state를 다시 보고 rotation과 sp2를 최종 정리
                         sync_point2, retry_state = self._finalize_retry_state(
                             info, retry_state, sync_point2,
                             target_sync_point1, node_count)
+                        self.logger.info(
+                            '[RETRY_STATE_DONE] %s/%s node_idx=%s rot=%s '
+                            'slots=%s sp2=%s',
+                            info['account'], info['container'],
+                            node_index, retry_state['rotation'],
+                            self._retry_slot_points(retry_state),
+                            sync_point2)
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
                     sync_stage_time = time()
