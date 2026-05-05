@@ -373,6 +373,9 @@ class ContainerSync(Daemon):
             retry_state['slots'][str(owner_index)] = \
                 self._normalize_retry_slot(cached_retry_slot, sync_point2)
         return retry_state
+
+    def _retry_slot_points(self, retry_state):
+        return {k: v['point'] for k, v in retry_state['slots'].items()}
     
     # 읽어 온 retry slot 값을 기본 형태로 맞추기
     def _normalize_retry_slot(self, retry_slot, sync_point2):
@@ -621,6 +624,13 @@ class ContainerSync(Daemon):
                         sync_point2, retry_state = self._finalize_retry_state(
                             info, retry_state, sync_point2,
                             target_sync_point1, node_count)
+                        self.logger.info(
+                            '[RETRY_STATE_DONE] %s/%s node_idx=%s rot=%s '
+                            'slots=%s sp2=%s',
+                            info['account'], info['container'],
+                            node_index, retry_state['rotation'],
+                            self._retry_slot_points(retry_state),
+                            sync_point2)
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
                     sync_stage_time = time()
