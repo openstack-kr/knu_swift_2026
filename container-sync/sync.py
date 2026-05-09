@@ -21,7 +21,7 @@ from time import ctime, time
 from random import choice, random
 from struct import unpack_from
 
-from eventlet import sleep, Timeout
+from swift.common.concurrency import sleep, Timeout
 from urllib.parse import urlparse
 
 import swift.common.db
@@ -61,6 +61,7 @@ pipeline = catch_errors proxy-logging cache symlink proxy-server
 [app:proxy-server]
 use = egg:swift#proxy
 account_autocreate = true
+allow_account_management = true
 
 [filter:symlink]
 use = egg:swift#symlink
@@ -217,11 +218,22 @@ class ContainerSync(Daemon):
 
         internal_client_conf_path = conf.get('internal_client_conf_path')
         if not internal_client_conf_path:
-            self.logger.warning(
-                'Configuration option internal_client_conf_path not '
-                'defined. Using default configuration, See '
-                'internal-client.conf-sample for options')
-            internal_client_conf = ConfigString(ic_conf_body)
+            internal_client_conf_path = os.path.join(
+                self.swift_dir,
+                'internal-client.conf')
+            if os.path.exists(internal_client_conf_path):
+                self.logger.warning(
+                    'Configuration option internal_client_conf_path not '
+                    'set, but %s exists and will be used.',
+                    internal_client_conf_path)
+                internal_client_conf = internal_client_conf_path
+            else:
+                self.logger.warning(
+                    'Configuration option internal_client_conf_path not '
+                    'defined. In a future release, this will be an error. '
+                    'Using default configuration, See '
+                    'internal-client.conf-sample for options')
+                internal_client_conf = ConfigString(ic_conf_body)
         else:
             internal_client_conf = internal_client_conf_path
         try:
@@ -335,7 +347,7 @@ class ContainerSync(Daemon):
                 row, sync_to, user_key, broker, info, realm, realm_key))
                 for row in rows]
 
-        # 병렬 실행 수는 row 수와 동시성 제한 중 작은 쪽을 쓴다
+        # 병렬 실행 수는 row 수와 sync_row_concurrency 중 작은 쪽을 쓴다
         pool_size = min(self.sync_row_concurrency, len(rows))
         with ContextPool(pool_size) as pool:
             coros = []
@@ -423,6 +435,7 @@ class ContainerSync(Daemon):
             if batches_since_flush >= self.retry_point_flush_batches:
                 retry_slot['point'] = retry_point
                 self._store_retry_slot(info, owner_index, retry_slot)
+                broker.set_x_container_sync_points(None, retry_point)
                 batches_since_flush = 0
 
         retry_slot['point'] = retry_point
