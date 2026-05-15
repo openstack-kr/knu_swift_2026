@@ -335,29 +335,12 @@ class ContainerSync(Daemon):
                     if row['ROWID'] <= stop_sync_point]
         return rows
 
-    # row 작업을 한 번에 실행
-    def _run_row_batch(self, rows, sync_to, user_key, broker, info,
-                       realm, realm_key):
-        if not rows:
-            return []
-
-        # 병렬이 필요 없으면 바로 실행
-        if self.sync_row_concurrency <= 1 or len(rows) == 1:
-            return [(row, self.container_sync_row(
-                row, sync_to, user_key, broker, info, realm, realm_key))
-                for row in rows]
-
-        # 병렬 실행 수는 row 수와 sync_row_concurrency 중 작은 쪽을 쓴다
-        pool_size = min(self.sync_row_concurrency, len(rows))
-        with ContextPool(pool_size) as pool:
-            coros = []
-            for row in rows:
-                # 각 row 작업을 먼저 던져 두고 나중에 결과를 모은다
-                coros.append((row, pool.spawn(
-                    self.container_sync_row, row, sync_to, user_key,
-                    broker, info, realm, realm_key)))
-            # 제출한 순서대로 결과를 모은다
-            return [(row, coro.wait()) for row, coro in coros]
+    # row owner를 계산한다
+    def _get_row_owner_index(self, info, row, node_count):
+        key = hash_path(
+            info['account'], info['container'], row['name'],
+            raw_digest=True)
+        return unpack_from('>I', key)[0] % node_count
 
     # 현재 노드가 nodes에서 몇 번째인지 찾기
     # 이 부분은 차후 contaienr_id로 교체 바람
@@ -405,21 +388,28 @@ class ContainerSync(Daemon):
             if not rows:
                 break
 
-            # 각 row가 내 몫인지 먼저 표시
-            rows_with_owner = []
-            for row in rows:
-                key = hash_path(
-                    info['account'], info['container'], row['name'],
-                    raw_digest=True)
-                rows_with_owner.append(
-                    (row, unpack_from('>I', key)[0] % node_count
-                     == owner_index))
+            rows_with_owner = [
+                (row, self._get_row_owner_index(info, row, node_count)
+                 == owner_index)
+                for row in rows]
+            owned_rows = [
+                row for row, is_owned in rows_with_owner if is_owned]
 
-            # 내 몫인 row만 실제 sync 하고, 성공 여부만 순서대로 꺼내 쓴다.
-            owned_results = iter(success for _, success in self._run_row_batch(
-                [row for row, is_owned in rows_with_owner if is_owned],
-                sync_to, user_key, broker, info, realm,
-                realm_key))
+            if self.sync_row_concurrency <= 1 or len(owned_rows) <= 1:
+                owned_results = iter(
+                    self.container_sync_row(
+                        row, sync_to, user_key, broker, info, realm,
+                        realm_key)
+                    for row in owned_rows)
+            else:
+                pool_size = min(self.sync_row_concurrency, len(owned_rows))
+                with ContextPool(pool_size) as pool:
+                    coros = [
+                        pool.spawn(
+                            self.container_sync_row, row, sync_to, user_key,
+                            broker, info, realm, realm_key)
+                        for row in owned_rows]
+                    owned_results = iter(coro.wait() for coro in coros)
 
             # retry_point는 전체 row 순서를 따라가야 한다.
             # owner 몫이면 결과를 확인하고, 아니면 point만 넘긴다.
@@ -637,30 +627,27 @@ class ContainerSync(Daemon):
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
                     sync_stage_time = time()
-                    # row는 local owner가 처리하고, DB sync point 갱신은 batch로 묶는다
+                    # new row(sync_point1 < new)는 batch 없이 sliding window로 처리한다
                     pending_new = collections.deque()
                     with ContextPool(self.sync_row_concurrency) as pool:
                         while sync_stage_time < stop_at:
-                            rows = self._get_row_batch(broker, sync_point1)
+                            rows = broker.get_items_since(sync_point1, 1)
                             if not rows:
                                 break
-                            for row in rows:
-                                # 새 row의 owner가 현재 노드면 이번 sync에서 바로 처리한다
-                                key = hash_path(
-                                    info['account'], info['container'],
-                                    row['name'], raw_digest=True)
-                                if unpack_from('>I', key)[0] % \
-                                        len(nodes) == ordinal:
-                                    pending_new.append((row, pool.spawn(
-                                        self.container_sync_row, row, sync_to,
-                                        user_key, broker, info, realm,
-                                        realm_key)))
-                                    if len(pending_new) >= \
-                                            self.sync_row_concurrency:
-                                        _, done_coro = \
-                                            pending_new.popleft()
-                                        done_coro.wait()
-                                sync_point1 = row['ROWID']
+
+                            row = rows[0]
+                            # 새 row의 owner가 현재 노드면 이번 sync에서 바로 처리한다
+                            if self._get_row_owner_index(
+                                    info, row, len(nodes)) == ordinal:
+                                pending_new.append((row, pool.spawn(
+                                    self.container_sync_row, row, sync_to,
+                                    user_key, broker, info, realm,
+                                    realm_key)))
+                                if len(pending_new) >= \
+                                        self.sync_row_concurrency:
+                                    _, done_coro = pending_new.popleft()
+                                    done_coro.wait()
+                            sync_point1 = row['ROWID']
 
                             broker.set_x_container_sync_points(
                                 sync_point1, None)
