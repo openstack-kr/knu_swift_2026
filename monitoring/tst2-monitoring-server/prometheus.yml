@@ -1,0 +1,37 @@
+# Sample config for Prometheus.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+  external_labels:
+    monitor: 'swift-monitor'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['localhost:9093']
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  - job_name: 'prometheus'
+    scrape_interval: 5s
+    scrape_timeout: 5s
+    static_configs:
+      - targets:
+          - 'localhost:9090'
+
+  - job_name: 'monitoring-node'
+    static_configs:
+      - targets:
+          - 'localhost:9100'
+
+  - job_name: 'swift-nodes'
+    static_configs:
+      - targets:
+          - '192.168.0.39:9100'
+          - '192.168.0.102:9100'
+          - '192.168.0.56:9100'

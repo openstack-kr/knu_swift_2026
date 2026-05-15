@@ -1,0 +1,12 @@
+services:
+  quickwit:
+    image: quickwit/quickwit:latest
+    container_name: quickwit
+    command: run
+    ports:
+      - "7280:7280"
+    volumes:
+      - quickwit-data:/quickwit/qwdata
+
+volumes:
+  quickwit-data:

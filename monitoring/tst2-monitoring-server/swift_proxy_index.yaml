@@ -1,0 +1,52 @@
+version: 0.8
+
+index_id: swift-proxy-logs
+
+doc_mapping:
+  mode: strict
+  field_mappings:
+    - name: timestamp
+      type: datetime
+      input_formats:
+        - rfc3339
+      fast: true
+
+    - name: host
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: program
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: method
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: path
+      type: text
+      tokenizer: default
+
+    - name: status
+      type: u64
+      fast: true
+
+    - name: request_time
+      type: f64
+      fast: true
+
+    - name: bytes
+      type: u64
+      fast: true
+
+    - name: message
+      type: text
+      tokenizer: default
+
+  timestamp_field: timestamp
+
+indexing_settings:
+  commit_timeout_secs: 5
