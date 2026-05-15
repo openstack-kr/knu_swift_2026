@@ -8,7 +8,7 @@
 
 - `container-sync/sync.py`
 - `container-sync/backend.py`
-- `test_init.sh`
+- `test/test_init.sh`
 
 ## 브랜치 역할
 
