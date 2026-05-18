@@ -342,15 +342,6 @@ class ContainerSync(Daemon):
             raw_digest=True)
         return unpack_from('>I', key)[0] % node_count
 
-    # 현재 노드가 nodes에서 몇 번째인지 찾기
-    # 이 부분은 차후 contaienr_id로 교체 바람
-    def _get_my_node_index(self, db_file, nodes):
-        for i, node in enumerate(nodes):
-            if is_local_device(self._myips, self._myport,
-                               node['ip'], node['port']):
-                return i
-        return None
-
     # memcached에서 retry state를 읽어 온다. 없으면 초기값을 만든다
     def _read_retry_state(self, info, sync_point2, node_count):
         retry_state = {'rotation': 0, 'slots': {}}
@@ -404,12 +395,14 @@ class ContainerSync(Daemon):
             else:
                 pool_size = min(self.sync_row_concurrency, len(owned_rows))
                 with ContextPool(pool_size) as pool:
-                    coros = [
+                    row_sync_waiters = [
                         pool.spawn(
                             self.container_sync_row, row, sync_to, user_key,
                             broker, info, realm, realm_key)
                         for row in owned_rows]
-                    owned_results = iter(coro.wait() for coro in coros)
+                    owned_results = iter(
+                        row_sync_waiter.wait()
+                        for row_sync_waiter in row_sync_waiters)
 
             # retry_point는 전체 row 순서를 따라가야 한다.
             # owner 몫이면 결과를 확인하고, 아니면 point만 넘긴다.
@@ -543,13 +536,6 @@ class ContainerSync(Daemon):
             else:
                 return
             
-            # 위 gate와는 별도로, retry 분배에 쓸 현재 프로세스의
-            # 안정적인 self node index를 device + ip/port로 구한다
-            node_index = self._get_my_node_index(
-                broker.db_file, nodes)
-            if node_index is None:
-                return
-            
             if broker.metadata.get(SYSMETA_VERSIONS_CONT):
                 self.container_skips += 1
                 self.logger.increment('skips')
@@ -604,7 +590,7 @@ class ContainerSync(Daemon):
                             retry_slot = retry_state['slots'][
                                 str(owner_index)]
                             if (owner_index + rotation) % \
-                                    node_count != node_index:
+                                    node_count != ordinal:
                                 continue
                             retry_state['slots'][str(owner_index)] = \
                                 self._sync_retry_slot(
@@ -628,7 +614,7 @@ class ContainerSync(Daemon):
                     next_sync_point = sync_point2
                     sync_stage_time = time()
                     # new row(sync_point1 < new)는 batch 없이 sliding window로 처리한다
-                    pending_new = collections.deque()
+                    submitted_row_syncs = collections.deque()
                     with ContextPool(self.sync_row_concurrency) as pool:
                         while sync_stage_time < stop_at:
                             rows = broker.get_items_since(sync_point1, 1)
@@ -639,23 +625,32 @@ class ContainerSync(Daemon):
                             # 새 row의 owner가 현재 노드면 이번 sync에서 바로 처리한다
                             if self._get_row_owner_index(
                                     info, row, len(nodes)) == ordinal:
-                                pending_new.append((row, pool.spawn(
+                                # 1. Submit: 작업은 비동기로 던져 두고,
+                                # 결과 회수는 아래 wait에서 한 번에 몰아서 한다
+                                submitted_row_syncs.append((row, pool.spawn(
                                     self.container_sync_row, row, sync_to,
                                     user_key, broker, info, realm,
                                     realm_key)))
-                                if len(pending_new) >= \
+                                if len(submitted_row_syncs) >= \
                                         self.sync_row_concurrency:
-                                    _, done_coro = pending_new.popleft()
-                                    done_coro.wait()
+                                    # 2. Wait: sliding window 크기를 넘기지
+                                    # 않도록 가장 먼저 던진 작업 하나를 기다림 (wait oldest)
+                                    _, row_sync_waiter = \
+                                        submitted_row_syncs.popleft()
+                                    row_sync_waiter.wait()
+                            # 3. Advance: owner가 아니어도 새 row 영역은 모두
+                            # 지나갔다는 뜻이므로 sync_point1은 현재 row까지 전진
                             sync_point1 = row['ROWID']
 
+                            # 4. Flush: new row 진행 지점은 한 row씩 바로 DB에 반영
                             broker.set_x_container_sync_points(
                                 sync_point1, None)
                             sync_stage_time = time()
 
-                        while pending_new:
-                            _, done_coro = pending_new.popleft()
-                            done_coro.wait()
+                        while submitted_row_syncs:
+                            _, row_sync_waiter = \
+                                submitted_row_syncs.popleft()
+                            row_sync_waiter.wait()
                     sync_stage_time = time()
                     self.container_syncs += 1
                     self.logger.increment('syncs')
