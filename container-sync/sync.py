@@ -380,9 +380,9 @@ class ContainerSync(Daemon):
                         broker, info, realm, realm_key)
                     for row in owned_rows]
                 # 순서대로 wait하며 결과를 회수
-                owned_row_sync_results = iter(
+                owned_row_sync_results = iter([
                     row_sync_waiter.wait()
-                    for row_sync_waiter in row_sync_waiters)
+                    for row_sync_waiter in row_sync_waiters])
 
             # retry_point는 전체 row 순서를 따라감
             # owner 몫이면 결과를 확인하고, 아니면 point만 전진
