@@ -586,6 +586,13 @@ class ContainerSync(Daemon):
                         sync_point2, retry_state = self._finalize_retry_state(
                             info, retry_state, sync_point2,
                             target_sync_point1, node_count)
+                        self.logger.info(
+                            '[RETRY_STATE_DONE] %s/%s node_idx=%s rot=%s '
+                            'slots=%s sp2=%s',
+                            info['account'], info['container'],
+                            node_index, retry_state['rotation'],
+                            self._retry_slot_points(retry_state),
+                            sync_point2)
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
                     sync_stage_time = time()
