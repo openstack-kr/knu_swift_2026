@@ -1,12 +1,24 @@
 services:
-  quickwit:
-    image: quickwit/quickwit:latest
-    container_name: quickwit
-    command: run
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: swift-grafana
     ports:
-      - "7280:7280"
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: https://github.com/quickwit-oss/quickwit-datasource/releases/download/v0.5.0/quickwit-quickwit-datasource-0.5.0.zip;quickwit-quickwit-datasource
     volumes:
-      - quickwit-data:/quickwit/qwdata
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - quickwit-swift
 
 volumes:
-  quickwit-data:
+  grafana-data:
+
+networks:
+  quickwit-swift:
+    external: true
+    name: quickwit-swift_default

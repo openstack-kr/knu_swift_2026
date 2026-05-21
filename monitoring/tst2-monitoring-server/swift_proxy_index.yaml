@@ -3,12 +3,18 @@ version: 0.8
 index_id: swift-proxy-logs
 
 doc_mapping:
-  mode: strict
+  mode: dynamic
   field_mappings:
     - name: timestamp
       type: datetime
       input_formats:
         - rfc3339
+      fast: true
+      fast_precision: seconds
+
+    - name: site
+      type: text
+      tokenizer: raw
       fast: true
 
     - name: host
@@ -21,6 +27,14 @@ doc_mapping:
       tokenizer: raw
       fast: true
 
+    - name: client_ip
+      type: ip
+      fast: true
+
+    - name: remote_addr
+      type: ip
+      fast: true
+
     - name: method
       type: text
       tokenizer: raw
@@ -28,9 +42,28 @@ doc_mapping:
 
     - name: path
       type: text
-      tokenizer: default
+      tokenizer: raw
+      fast: true
+
+    - name: protocol
+      type: text
+      tokenizer: raw
+      fast: true
 
     - name: status
+      type: u64
+      fast: true
+
+    - name: status_class
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: bytes_sent
+      type: u64
+      fast: true
+
+    - name: bytes
       type: u64
       fast: true
 
@@ -38,15 +71,41 @@ doc_mapping:
       type: f64
       fast: true
 
-    - name: bytes
-      type: u64
+    - name: transaction_id
+      type: text
+      tokenizer: raw
       fast: true
+
+    - name: user_agent
+      type: text
+      tokenizer: default
 
     - name: message
       type: text
       tokenizer: default
+      record: position
+      stored: true
+
+    - name: log_type
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: error_code
+      type: u64
+      fast: true
 
   timestamp_field: timestamp
 
+search_settings:
+  default_search_fields:
+    - message
+    - path
+    - user_agent
+    - transaction_id
+
 indexing_settings:
   commit_timeout_secs: 5
+
+retention:
+  period: 30 days

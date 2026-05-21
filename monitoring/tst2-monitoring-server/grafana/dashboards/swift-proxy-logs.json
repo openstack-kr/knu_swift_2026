@@ -1,0 +1,511 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request Rate",
+      "type": "timeseries",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "*",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Requests by Status Class",
+      "type": "timeseries",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "status:[200 TO 299]",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
+          "alias": "2xx"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "status:[300 TO 399]",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
+          "alias": "3xx"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "status:[400 TO 499]",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
+          "alias": "4xx"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "status:[500 TO 599]",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
+          "alias": "5xx"
+        }
+      ],
+      "options": {},
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Requests by Host",
+      "type": "barchart",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "*",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "host",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1"
+              }
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Requests by Method",
+      "type": "barchart",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "method:GET OR method:PUT OR method:POST OR method:DELETE OR method:HEAD OR method:COPY OR method:OPTIONS OR method:CONNECT",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "method",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1"
+              }
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Average Request Time",
+      "type": "timeseries",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "*",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "request_time"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ]
+        }
+      ],
+      "options": {},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "4xx / 5xx Requests",
+      "type": "timeseries",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "status:[400 TO 499]",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
+          "alias": "4xx"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "status:[500 TO 599]",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
+          "alias": "5xx"
+        }
+      ],
+      "options": {},
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Recent Proxy Logs",
+      "type": "logs",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "*",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "logs",
+              "settings": {
+                "limit": "100"
+              }
+            }
+          ],
+          "bucketAggs": []
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": [
+    "swift",
+    "quickwit",
+    "proxy",
+    "logs"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-14d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Swift Proxy Logs",
+  "uid": "swift_proxy_logs",
+  "version": 5,
+  "weekStart": ""
+}
