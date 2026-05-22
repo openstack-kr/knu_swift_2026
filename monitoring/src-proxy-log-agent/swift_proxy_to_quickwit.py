@@ -8,7 +8,10 @@ import time
 from datetime import datetime, timezone
 from urllib import request
 
-QUICKWIT_INGEST_URL = "http://192.168.0.123:7280/api/v1/swift-proxy-logs/ingest"
+QUICKWIT_INGEST_URL = os.environ.get(
+    "QUICKWIT_INGEST_URL",
+    "http://127.0.0.1:7280/api/v1/swift-proxy-logs/ingest",
+)
 LOG_FILE = "/var/log/swift/proxy.log"
 INDEX_ID = "swift-proxy-logs"
 
@@ -18,6 +21,7 @@ SITE = os.environ.get("SWIFT_SITE_NAME", HOST)
 # Swift proxy 로그 형식이 환경마다 다르므로 우선 흔한 HTTP method/status/time 위주로 추출
 METHOD_RE = re.compile(r'\b(GET|PUT|POST|DELETE|HEAD|COPY|OPTIONS|CONNECT)\b')
 STATUS_RE = re.compile(r'\s(2\d\d|3\d\d|4\d\d|5\d\d)\s')
+ERROR_CODE_RE = re.compile(r'code\s+(2\d\d|3\d\d|4\d\d|5\d\d)\b')
 TIME_RE = re.compile(r'(\d+\.\d+)$')
 REQUEST_RE = re.compile(r'\"(GET|PUT|POST|DELETE|HEAD|COPY|OPTIONS|CONNECT)\s+([^\"\s]+)[^\"]*\"')
 QUOTED_RE = re.compile(r'\"([^\"]*)\"')
@@ -27,6 +31,10 @@ def status_class(status):
     if 200 <= status <= 599:
         return f"{status // 100}xx"
     return "unknown"
+
+
+def status_text(status):
+    return str(status) if 100 <= status <= 599 else "unknown"
 
 def to_rfc3339_now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -83,6 +91,7 @@ def parse_swift_access(line):
         "path": tokens[4],
         "protocol": tokens[5],
         "status": status,
+        "status_text": status_text(status),
         "status_class": status_class(status),
         "bytes_sent": bytes_sent,
         "bytes": bytes_sent,
@@ -117,7 +126,7 @@ def parse_line(line):
         if m:
             method = m.group(1)
 
-    s = STATUS_RE.search(line)
+    s = STATUS_RE.search(line) or ERROR_CODE_RE.search(line)
     if s:
         status = int(s.group(1))
 
@@ -140,6 +149,8 @@ def parse_line(line):
     if len(quoted) >= 3:
         user_agent = quoted[2]
 
+    log_type = "access" if method and status else "error" if status or "ERROR" in line else "unknown"
+
     return {
         "timestamp": to_rfc3339_now(),
         "host": HOST,
@@ -148,6 +159,7 @@ def parse_line(line):
         "method": method or "",
         "path": path,
         "status": status or 0,
+        "status_text": status_text(status or 0),
         "status_class": status_class(status or 0),
         "client_ip": "0.0.0.0",
         "remote_addr": "0.0.0.0",
@@ -158,8 +170,8 @@ def parse_line(line):
         "transaction_id": tx.group(1) if tx else "",
         "user_agent": user_agent,
         "message": line.strip(),
-        "log_type": "access" if status else "unknown",
-        "error_code": 0,
+        "log_type": log_type,
+        "error_code": status if log_type == "error" else 0,
     }
 
 def post_batch(batch):

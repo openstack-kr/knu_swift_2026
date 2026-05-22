@@ -205,3 +205,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# Monitoring local config and credentials
+monitoring/tst2-monitoring-server/.env
+monitoring/tst2-monitoring-server/prometheus.yml
+*.pem
+.ssh/

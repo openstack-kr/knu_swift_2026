@@ -16,6 +16,7 @@ HOST = socket.gethostname()
 
 METHOD_RE = re.compile(r'\b(GET|PUT|POST|DELETE|HEAD|COPY|OPTIONS|CONNECT)\b')
 STATUS_RE = re.compile(r'\s(2\d\d|3\d\d|4\d\d|5\d\d)\s')
+ERROR_CODE_RE = re.compile(r'code\s+(2\d\d|3\d\d|4\d\d|5\d\d)\b')
 TIME_RE = re.compile(r'(\d+\.\d+)$')
 REQUEST_RE = re.compile(r'\"(GET|PUT|POST|DELETE|HEAD|COPY|OPTIONS|CONNECT)\s+([^\"\s]+)\s+(HTTP/[^\"\s]+)\"')
 QUOTED_RE = re.compile(r'\"([^\"]*)\"')
@@ -27,6 +28,10 @@ def status_class(status):
     if 200 <= status <= 599:
         return f"{status // 100}xx"
     return "unknown"
+
+
+def status_text(status):
+    return str(status) if 100 <= status <= 599 else "unknown"
 
 
 def now_rfc3339():
@@ -84,6 +89,7 @@ def parse_swift_access(line, site):
         "path": tokens[4],
         "protocol": tokens[5],
         "status": status,
+        "status_text": status_text(status),
         "status_class": status_class(status),
         "bytes_sent": bytes_sent,
         "bytes": bytes_sent,
@@ -120,7 +126,7 @@ def parse_line(line, site):
         if m:
             method = m.group(1)
 
-    s = STATUS_RE.search(line)
+    s = STATUS_RE.search(line) or ERROR_CODE_RE.search(line)
     if s:
         status = int(s.group(1))
 
@@ -137,6 +143,8 @@ def parse_line(line, site):
     quoted = QUOTED_RE.findall(line)
     user_agent = quoted[2] if len(quoted) >= 3 else ""
 
+    log_type = "access" if method and status else "error" if status or "ERROR" in line else "unknown"
+
     return {
         "timestamp": now_rfc3339(),
         "site": site,
@@ -148,6 +156,7 @@ def parse_line(line, site):
         "path": path,
         "protocol": protocol,
         "status": status,
+        "status_text": status_text(status),
         "status_class": status_class(status),
         "bytes_sent": 0,
         "bytes": 0,
@@ -155,8 +164,8 @@ def parse_line(line, site):
         "transaction_id": tx.group(1) if tx else "",
         "user_agent": user_agent,
         "message": line.strip(),
-        "log_type": "access" if status else "unknown",
-        "error_code": 0,
+        "log_type": log_type,
+        "error_code": status if log_type == "error" else 0,
     }
 
 
@@ -231,7 +240,7 @@ def collect_once(args):
 def main():
     parser = argparse.ArgumentParser(description="Collect Swift proxy logs into Quickwit")
     parser.add_argument("--site", required=True, help="site label, e.g. source or replica")
-    parser.add_argument("--ssh-host", help="remote ssh target, e.g. ubuntu@133.186.209.214")
+    parser.add_argument("--ssh-host", help="remote ssh target, e.g. ubuntu@<swift-proxy-host>")
     parser.add_argument("--ssh-key", help="ssh private key path")
     parser.add_argument("--log-file", default=DEFAULT_LOG_FILE)
     parser.add_argument("--quickwit-ingest-url", default=DEFAULT_QUICKWIT_URL)

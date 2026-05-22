@@ -54,6 +54,11 @@ doc_mapping:
       type: u64
       fast: true
 
+    - name: status_text
+      type: text
+      tokenizer: raw
+      fast: true
+
     - name: status_class
       type: text
       tokenizer: raw

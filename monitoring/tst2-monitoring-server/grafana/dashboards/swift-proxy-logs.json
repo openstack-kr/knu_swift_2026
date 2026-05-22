@@ -24,8 +24,8 @@
   "panels": [
     {
       "id": 1,
-      "title": "Request Rate",
-      "type": "timeseries",
+      "title": "Total Requests",
+      "type": "stat",
       "datasource": {
         "type": "quickwit-quickwit-datasource",
         "uid": "swift_quickwit_logs"
@@ -33,8 +33,8 @@
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 12,
-        "h": 8
+        "w": 5,
+        "h": 5
       },
       "targets": [
         {
@@ -64,9 +64,35 @@
           ]
         }
       ],
-      "options": {},
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
       "fieldConfig": {
         "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {}
         },
         "overrides": []
@@ -74,7 +100,387 @@
     },
     {
       "id": 2,
-      "title": "Requests by Status Class",
+      "title": "2xx Success",
+      "type": "stat",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 5,
+        "y": 0,
+        "w": 5,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "status:[200 TO 299]",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ]
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "4xx Client Errors",
+      "type": "stat",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 0,
+        "w": 5,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "status:[400 TO 499]",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ]
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          },
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "5xx Server Errors",
+      "type": "stat",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 15,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "status:[500 TO 599]",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ]
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          },
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Avg Latency",
+      "type": "stat",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 19,
+        "y": 0,
+        "w": 5,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "*",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "request_time"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ]
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "mean"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 1.0
+              }
+            ]
+          },
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "Traffic Over Time",
+      "type": "timeseries",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "*",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
+          "alias": "requests"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Status Class Over Time",
       "type": "timeseries",
       "datasource": {
         "type": "quickwit-quickwit-datasource",
@@ -82,7 +488,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 0,
+        "y": 5,
         "w": 12,
         "h": 8
       },
@@ -196,17 +602,33 @@
           "alias": "5xx"
         }
       ],
-      "options": {},
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "fieldConfig": {
         "defaults": {
-          "custom": {}
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          }
         },
         "overrides": []
       }
     },
     {
-      "id": 3,
-      "title": "Requests by Host",
+      "id": 8,
+      "title": "Top Hosts",
       "type": "barchart",
       "datasource": {
         "type": "quickwit-quickwit-datasource",
@@ -214,7 +636,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 8,
+        "y": 13,
         "w": 8,
         "h": 8
       },
@@ -225,7 +647,7 @@
             "type": "quickwit-quickwit-datasource",
             "uid": "swift_quickwit_logs"
           },
-          "query": "*",
+          "query": "host:*",
           "timeField": "timestamp",
           "metrics": [
             {
@@ -251,13 +673,14 @@
       "options": {},
       "fieldConfig": {
         "defaults": {
+          "unit": "short",
           "custom": {}
         },
         "overrides": []
       }
     },
     {
-      "id": 4,
+      "id": 9,
       "title": "Requests by Method",
       "type": "barchart",
       "datasource": {
@@ -266,7 +689,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 8,
+        "y": 13,
         "w": 8,
         "h": 8
       },
@@ -277,7 +700,7 @@
             "type": "quickwit-quickwit-datasource",
             "uid": "swift_quickwit_logs"
           },
-          "query": "method:GET OR method:PUT OR method:POST OR method:DELETE OR method:HEAD OR method:COPY OR method:OPTIONS OR method:CONNECT",
+          "query": "*",
           "timeField": "timestamp",
           "metrics": [
             {
@@ -291,7 +714,7 @@
               "type": "terms",
               "field": "method",
               "settings": {
-                "size": "10",
+                "size": "12",
                 "order": "desc",
                 "orderBy": "_count",
                 "min_doc_count": "1"
@@ -303,14 +726,15 @@
       "options": {},
       "fieldConfig": {
         "defaults": {
+          "unit": "short",
           "custom": {}
         },
         "overrides": []
       }
     },
     {
-      "id": 5,
-      "title": "Average Request Time",
+      "id": 10,
+      "title": "Latency by Method",
       "type": "timeseries",
       "datasource": {
         "type": "quickwit-quickwit-datasource",
@@ -318,7 +742,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 8,
+        "y": 13,
         "w": 8,
         "h": 8
       },
@@ -329,7 +753,7 @@
             "type": "quickwit-quickwit-datasource",
             "uid": "swift_quickwit_logs"
           },
-          "query": "*",
+          "query": "method:GET",
           "timeField": "timestamp",
           "metrics": [
             {
@@ -348,21 +772,206 @@
                 "min_doc_count": "0"
               }
             }
-          ]
+          ],
+          "alias": "GET"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "method:HEAD",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "request_time"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
+          "alias": "HEAD"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "method:PUT",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "request_time"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
+          "alias": "PUT"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "method:CONNECT",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "request_time"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0"
+              }
+            }
+          ],
+          "alias": "CONNECT"
         }
       ],
-      "options": {},
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "custom": {}
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 18,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "spanNulls": true
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.05
+              },
+              {
+                "color": "red",
+                "value": 0.1
+              }
+            ]
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GET"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "HEAD"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PUT"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CONNECT"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
       }
     },
     {
-      "id": 6,
-      "title": "4xx / 5xx Requests",
+      "id": 11,
+      "title": "Error Traffic",
       "type": "timeseries",
       "datasource": {
         "type": "quickwit-quickwit-datasource",
@@ -370,9 +979,9 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 16,
-        "w": 12,
-        "h": 8
+        "y": 21,
+        "w": 10,
+        "h": 7
       },
       "targets": [
         {
@@ -430,16 +1039,116 @@
           "alias": "5xx"
         }
       ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "4xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "title": "Status Class Breakdown",
+      "type": "barchart",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_quickwit_logs"
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 21,
+        "w": 14,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_quickwit_logs"
+          },
+          "query": "*",
+          "timeField": "timestamp",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "status_class",
+              "settings": {
+                "size": "4",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1"
+              }
+            }
+          ]
+        }
+      ],
       "options": {},
       "fieldConfig": {
         "defaults": {
+          "unit": "short",
           "custom": {}
         },
         "overrides": []
       }
     },
     {
-      "id": 7,
+      "id": 13,
       "title": "Recent Proxy Logs",
       "type": "logs",
       "datasource": {
@@ -447,10 +1156,10 @@
         "uid": "swift_quickwit_logs"
       },
       "gridPos": {
-        "x": 12,
-        "y": 16,
-        "w": 12,
-        "h": 8
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 7
       },
       "targets": [
         {
@@ -466,7 +1175,7 @@
               "id": "1",
               "type": "logs",
               "settings": {
-                "limit": "100"
+                "limit": "30"
               }
             }
           ],
@@ -476,7 +1185,7 @@
       "options": {
         "showTime": true,
         "showLabels": false,
-        "wrapLogMessage": true,
+        "wrapLogMessage": false,
         "sortOrder": "Descending"
       },
       "fieldConfig": {
@@ -506,6 +1215,6 @@
   "timezone": "browser",
   "title": "Swift Proxy Logs",
   "uid": "swift_proxy_logs",
-  "version": 5,
+  "version": 13,
   "weekStart": ""
 }
