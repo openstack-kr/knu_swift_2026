@@ -373,8 +373,7 @@ class ContainerSync(Daemon):
                 row for row, is_owned in rows_with_owner if is_owned]
 
             # 3. Sync: dispatch owned rows concurrently.
-            pool_size = min(self.sync_row_concurrency, len(owned_rows))
-            with ContextPool(pool_size) as pool:
+            with ContextPool(self.sync_row_concurrency) as pool:
                 row_sync_waiters = [
                     pool.spawn(
                         self.container_sync_row, row, sync_to, user_key,
@@ -399,7 +398,6 @@ class ContainerSync(Daemon):
             self._store_retry_slot(info, owner_index, retry_slot)
             broker.set_x_container_sync_points(None, retry_point)
 
-        retry_slot['point'] = retry_point
         return retry_slot
 
     # Store the current node's retry point in memcached.
@@ -456,10 +454,10 @@ class ContainerSync(Daemon):
                 state['point'] for state in retry_state['slots'].values())
             retry_state['rotation'] = (
                 retry_state['rotation'] + 1) % node_count
-            if self.retry_memcache:
-                self.retry_memcache.set(
-                    '%s/rotation' % retry_cache_prefix,
-                    retry_state['rotation'])
+            # self.retry_memcache is non-None here (early-returned above).
+            self.retry_memcache.set(
+                '%s/rotation' % retry_cache_prefix,
+                retry_state['rotation'])
         return sync_point2, retry_state
 
     # When all nodes have reached target_sync_point1,
@@ -598,49 +596,34 @@ class ContainerSync(Daemon):
                     next_sync_point = sync_point2
                     sync_stage_time = time()
 
-                    # Phase 2 (sync_point1 <= new row)
-                    submitted_row_syncs = collections.deque()
+                    # Originally each container_sync_row ran serially, so the
+                    # loop stalled on every remote HTTP call. We parallelize it
+                    # through a bounded greenthread pool to overlap that I/O.
+                    #
+                    # Phase 2 (sync_point1 <= new row): fan out
+                    # container_sync_row across up to sync_row_concurrency
+                    # greenthreads. pool.spawn blocks when the pool is full,
+                    # so it acts as backpressure without a separate queue.
+                    # waitall() must be called before __exit__ —
+                    # ContextPool.close() kills any running coroutines.
                     with ContextPool(self.sync_row_concurrency) as pool:
                         while sync_stage_time < stop_at:
                             rows = broker.get_items_since(sync_point1, 1)
                             if not rows:
                                 break
-
                             row = rows[0]
-                            # 1. Calculate Owner: process the row immediately
-                            # when it belongs to the current node.
-                            if unpack_from(
-                                    '>I', hash_path(
-                                        info['account'], info['container'],
-                                        row['name'], raw_digest=True)
-                            )[0] % len(nodes) == ordinal:
-                                # 2. Sync: dispatch the work asynchronously
-                                # and collect completions below.
-                                submitted_row_syncs.append((row, pool.spawn(
+                            if unpack_from('>I', hash_path(
+                                    info['account'], info['container'],
+                                    row['name'], raw_digest=True))[0] \
+                                    % len(nodes) == ordinal:
+                                pool.spawn(
                                     self.container_sync_row, row, sync_to,
-                                    user_key, broker, info, realm,
-                                    realm_key)))
-                                if len(submitted_row_syncs) >= \
-                                        self.sync_row_concurrency:
-                                    # 3. Wait: keep the sliding window bounded
-                                    # by waiting for the oldest task first.
-                                    _, row_sync_waiter = \
-                                        submitted_row_syncs.popleft()
-                                    row_sync_waiter.wait()
-                            # 4. Advance: even for non-owned rows, the new-row
-                            # window has been traversed up to this row.
+                                    user_key, broker, info, realm, realm_key)
                             sync_point1 = row['ROWID']
-
-                            # 5. Flush: persist new-row progress to the DB
-                            # one row at a time.
                             broker.set_x_container_sync_points(
                                 sync_point1, None)
                             sync_stage_time = time()
-
-                        while submitted_row_syncs:
-                            _, row_sync_waiter = \
-                                submitted_row_syncs.popleft()
-                            row_sync_waiter.wait()
+                        pool.waitall()
                     sync_stage_time = time()
                     self.container_syncs += 1
                     self.logger.increment('syncs')
