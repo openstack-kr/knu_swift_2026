@@ -152,8 +152,6 @@ class ContainerSync(Daemon):
         #: to the next one. If a container sync hasn't finished in this time,
         #: it'll just be resumed next scan.
         self.container_time = int(conf.get('container_time', 60))
-        #: Per-run id for the rotation-advance lock, refreshed at sync start.
-        self.run_id = None
         #: ContainerSyncCluster instance for validating sync-to values.
         self.realms_conf = ContainerSyncRealms(
             os.path.join(
@@ -434,10 +432,12 @@ class ContainerSync(Daemon):
         # during a given sync pass.
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container'], None),)
-        lock_key = '%s/rotation-lock/%s/%s' % (
-            retry_cache_prefix, target_sync_point1, self.run_id)
-        # The lock only needs to live for this sync pass, so use container_time.
-        lock_ttl = max(self.container_time, 1)
+        lock_key = '%s/rotation-lock/%s' % (
+            retry_cache_prefix, target_sync_point1)
+        # Lock must outlive the worst-case node start jitter
+        # (sleep(random() * interval) in run_forever) so all replicas on the
+        # same retry window collapse onto the same key while it's still alive.
+        lock_ttl = max(self.interval, self.container_time)
         lock_value = self.retry_memcache.incr(lock_key, time=lock_ttl)
         if lock_value != 1:
             return sync_point2, retry_state
@@ -544,7 +544,6 @@ class ContainerSync(Daemon):
                     self.logger.increment('failures')
                     return
                 start_at = time()
-                self.run_id = int(start_at) // 60
                 stop_at = start_at + self.container_time
                 next_sync_point = None
                 sync_stage_time = start_at
