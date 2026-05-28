@@ -15,18 +15,19 @@
 
 import collections
 import errno
+import json
 import os
+import socket
 import uuid
 from time import ctime, time
 from random import choice, random
 from struct import unpack_from
 
-from eventlet import sleep, Timeout
+from swift.common.concurrency import sleep, Timeout
 from urllib.parse import urlparse
 
 import swift.common.db
 from swift.common.db import DatabaseConnectionError
-# retry progress 상태를 저장하는 broker 확장을 사용
 from swift.container.backend import ContainerBroker
 from swift.container.sync_store import ContainerSyncStore
 from swift.common.container_sync_realms import ContainerSyncRealms
@@ -42,7 +43,7 @@ from swift.common.swob import normalize_etag
 from swift.common.utils import (
     clean_content_type, config_true_value,
     FileLikeIter, get_logger, hash_path, quote, validate_sync_to,
-    # row 단위 병렬 작업에 green thread pool을 사용
+    # row 단위 병렬 작업에 ContextPool을 사용
     whataremyips, Timestamp, decode_timestamps, parse_options, ContextPool)
 from swift.common.daemon import Daemon
 from swift.common.http import HTTP_UNAUTHORIZED, HTTP_NOT_FOUND, HTTP_CONFLICT
@@ -61,6 +62,7 @@ pipeline = catch_errors proxy-logging cache symlink proxy-server
 [app:proxy-server]
 use = egg:swift#proxy
 account_autocreate = true
+allow_account_management = true
 
 [filter:symlink]
 use = egg:swift#symlink
@@ -152,8 +154,8 @@ class ContainerSync(Daemon):
         #: to the next one. If a container sync hasn't finished in this time,
         #: it'll just be resumed next scan.
         self.container_time = int(conf.get('container_time', 60))
-        #: rotation이 sync마다 +1만 되기 위한 lock Key 생성: run_id를 분당 단위로 만든다
-        self.run_id = int(time()) // 60
+        #: rotation advance lock에 쓰이는 per-run id. 실제 sync 시작 시각에서 갱신된다.
+        self.run_id = None
         #: ContainerSyncCluster instance for validating sync-to values.
         self.realms_conf = ContainerSyncRealms(
             os.path.join(
@@ -194,6 +196,31 @@ class ContainerSync(Daemon):
         self.container_stats = collections.defaultdict(int)
         self.container_stats.clear()
 
+        self.recon_enabled = config_true_value(
+            conf.get('container_sync_recon_enabled', 'true'))
+        self.recon_cache_path = conf.get('recon_cache_path',
+                                         '/var/cache/swift')
+        self.recon_file = conf.get('container_sync_recon_file',
+                                   'container-sync.recon')
+        self.recon_interval = float(conf.get('recon_interval', 15))
+        self.recon_max_containers = max(
+            0, int(conf.get('recon_max_containers') or 1000))
+        self.recon_last_flush = 0
+        self.recon_hostname = socket.gethostname()
+        self.recon_totals = collections.defaultdict(int)
+        self.recon_containers = {}
+        self.recon_scan = {
+            'mode': 'init',
+            'last_run_timestamp': 0,
+            'last_run_finished_timestamp': 0,
+            'last_run_duration_seconds': 0,
+            'scanned_containers': 0,
+            'synced_containers': 0,
+            'skipped_containers': 0,
+            'failed_containers': 0,
+            'time_exhausted_containers': 0,
+        }
+
         #: Time of last stats report.
         self.reported = time()
         self.swift_dir = conf.get('swift_dir', '/etc/swift')
@@ -210,18 +237,27 @@ class ContainerSync(Daemon):
         self.sync_row_concurrency = max(
             1, int(conf.get('sync_row_concurrency') or 8))
         self.sync_row_batch_size = max(
-            1, int(conf.get('sync_row_batch_size') or 24))
-        # retry 진행점은 10 batch마다 memcached에 중간 저장한다
-        self.retry_point_flush_batches = 10
+            1, int(conf.get('sync_row_batch_size') or 100))
         request_tries = int(conf.get('request_tries') or 3)
 
         internal_client_conf_path = conf.get('internal_client_conf_path')
         if not internal_client_conf_path:
-            self.logger.warning(
-                'Configuration option internal_client_conf_path not '
-                'defined. Using default configuration, See '
-                'internal-client.conf-sample for options')
-            internal_client_conf = ConfigString(ic_conf_body)
+            internal_client_conf_path = os.path.join(
+                self.swift_dir,
+                'internal-client.conf')
+            if os.path.exists(internal_client_conf_path):
+                self.logger.warning(
+                    'Configuration option internal_client_conf_path not '
+                    'set, but %s exists and will be used.',
+                    internal_client_conf_path)
+                internal_client_conf = internal_client_conf_path
+            else:
+                self.logger.warning(
+                    'Configuration option internal_client_conf_path not '
+                    'defined. In a future release, this will be an error. '
+                    'Using default configuration, See '
+                    'internal-client.conf-sample for options')
+                internal_client_conf = ConfigString(ic_conf_body)
         else:
             internal_client_conf = internal_client_conf_path
         try:
@@ -245,13 +281,14 @@ class ContainerSync(Daemon):
         """
         sleep(random() * self.interval)
         while True:
-            begin = time()
+            begin = self._recon_begin_scan('forever')
             for path in self.sync_store.synced_containers_generator():
                 self.container_stats.clear()
                 self.container_sync(path)
                 if time() - self.reported >= 3600:  # once an hour
                     self.report()
             elapsed = time() - begin
+            self._recon_finish_scan(begin)
             if elapsed < self.interval:
                 sleep(self.interval - elapsed)
 
@@ -260,13 +297,14 @@ class ContainerSync(Daemon):
         Runs a single container sync scan.
         """
         self.logger.info('Begin container sync "once" mode')
-        begin = time()
+        begin = self._recon_begin_scan('once')
         for path in self.sync_store.synced_containers_generator():
             self.container_sync(path)
             if time() - self.reported >= 3600:  # once an hour
                 self.report()
         self.report()
         elapsed = time() - begin
+        self._recon_finish_scan(begin)
         self.logger.info(
             'Container sync "once" mode completed: %.02fs', elapsed)
 
@@ -314,119 +352,263 @@ class ContainerSync(Daemon):
                           'point1': sync_point1,
                           'point2': sync_point2,
                           'total': max_row})
+
+    def _recon_int(self, value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _recon_total(self, key, amount=1):
+        if self.recon_enabled:
+            self.recon_totals[key] += amount
+
+    def _recon_incr_scan(self, key, amount=1):
+        if self.recon_enabled:
+            self.recon_scan[key] = self.recon_scan.get(key, 0) + amount
+
+    def _recon_begin_scan(self, mode):
+        now = time()
+        if self.recon_enabled:
+            self.recon_scan = {
+                'mode': mode,
+                'last_run_timestamp': now,
+                'last_run_finished_timestamp': 0,
+                'last_run_duration_seconds': 0,
+                'scanned_containers': 0,
+                'synced_containers': 0,
+                'skipped_containers': 0,
+                'failed_containers': 0,
+                'time_exhausted_containers': 0,
+            }
+            self._recon_flush()
+        return now
+
+    def _recon_finish_scan(self, started_at):
+        if not self.recon_enabled:
+            return
+        now = time()
+        self.recon_scan['last_run_finished_timestamp'] = now
+        self.recon_scan['last_run_duration_seconds'] = max(
+            0, now - started_at)
+        self._recon_flush(force=True)
+
+    def _recon_container_key(self, info):
+        return '%s/%s' % (info.get('account', ''),
+                          info.get('container', ''))
+
+    def _recon_limited_containers(self):
+        items = list(self.recon_containers.items())
+        if self.recon_max_containers == 0:
+            return {}
+        if len(items) > self.recon_max_containers:
+            items.sort(
+                key=lambda item: (
+                    item[1].get('new_backlog_rows', 0) +
+                    item[1].get('retry_backlog_rows', 0),
+                    item[1].get('last_update_timestamp', 0)),
+                reverse=True)
+            items = items[:self.recon_max_containers]
+        return dict(items)
+
+    def _recon_record_container(self, info, status, start_time=None,
+                                end_time=None, sync_point1=None,
+                                sync_point2=None, max_row=None,
+                                node_index=None, node_count=None,
+                                retry_state=None, reason='', sync_to=None,
+                                time_exhausted=False):
+        if not self.recon_enabled or not info:
+            return
+        now = end_time or time()
+        container_key = self._recon_container_key(info)
+        current = dict(self.recon_containers.get(container_key, {}))
+
+        sync_point1 = self._recon_int(
+            sync_point1 if sync_point1 is not None else
+            info.get('x_container_sync_point1', current.get(
+                'sync_point1', -1)), -1)
+        sync_point2 = self._recon_int(
+            sync_point2 if sync_point2 is not None else
+            info.get('x_container_sync_point2', current.get(
+                'sync_point2', -1)), -1)
+        max_row = self._recon_int(
+            max_row if max_row is not None else current.get('max_row', 0),
+            0)
+
+        retry_slots = current.get('retry_slots', {})
+        retry_rotation = current.get('retry_rotation', 0)
+        if retry_state:
+            retry_slots = {}
+            retry_rotation = self._recon_int(
+                retry_state.get('rotation', retry_rotation), 0)
+            for owner_index, slot in retry_state.get('slots', {}).items():
+                if isinstance(slot, dict):
+                    point = slot.get('point', -1)
+                else:
+                    point = slot
+                retry_slots[str(owner_index)] = self._recon_int(point, -1)
+
+        duration = 0
+        if start_time is not None:
+            duration = max(0, now - start_time)
+
+        item = {
+            'account': info.get('account', ''),
+            'container': info.get('container', ''),
+            'sync_to': sync_to or current.get('sync_to', ''),
+            'last_status': status,
+            'last_reason': reason or '',
+            'last_update_timestamp': now,
+            'last_run_duration_seconds': duration,
+            'sync_point1': sync_point1,
+            'sync_point2': sync_point2,
+            'max_row': max_row,
+            'new_backlog_rows': max(0, max_row - max(sync_point1, 0)),
+            'retry_backlog_rows': max(
+                0, sync_point1 - max(sync_point2, 0)),
+            'retry_rotation': retry_rotation,
+            'retry_slots': retry_slots,
+            'node_index': (node_index if node_index is not None else
+                           current.get('node_index', -1)),
+            'node_count': (node_count if node_count is not None else
+                           current.get('node_count', 0)),
+            'time_exhausted': 1 if time_exhausted else 0,
+            'last_success_timestamp': current.get(
+                'last_success_timestamp', 0),
+            'last_failure_timestamp': current.get(
+                'last_failure_timestamp', 0),
+            'last_skip_timestamp': current.get('last_skip_timestamp', 0),
+        }
+        if status == 'success':
+            item['last_success_timestamp'] = now
+            self._recon_incr_scan('synced_containers')
+        elif status == 'failure':
+            item['last_failure_timestamp'] = now
+            self._recon_incr_scan('failed_containers')
+        elif status == 'skipped':
+            item['last_skip_timestamp'] = now
+            self._recon_incr_scan('skipped_containers')
+        if time_exhausted:
+            self._recon_incr_scan('time_exhausted_containers')
+
+        self.recon_containers[container_key] = item
+        self._recon_flush()
+
+    def _recon_flush(self, force=False):
+        if not self.recon_enabled:
+            return
+        now = time()
+        if not force and now - self.recon_last_flush < self.recon_interval:
+            return
+
+        cache_path = os.path.join(self.recon_cache_path, self.recon_file)
+        tmp_path = '%s.%s.tmp' % (cache_path, os.getpid())
+        data = {
+            'container_sync': {
+                'timestamp': now,
+                'hostname': self.recon_hostname,
+                'daemon': dict(self.recon_scan),
+                'totals': dict(self.recon_totals),
+                'containers': self._recon_limited_containers(),
+            }
+        }
+
+        try:
+            if not os.path.isdir(self.recon_cache_path):
+                try:
+                    os.makedirs(self.recon_cache_path)
+                except OSError as err:
+                    if err.errno != errno.EEXIST:
+                        raise
+            with open(tmp_path, 'w') as fp:
+                json.dump(data, fp, sort_keys=True)
+                fp.write('\n')
+                fp.flush()
+                os.fsync(fp.fileno())
+            os.rename(tmp_path, cache_path)
+            self.recon_last_flush = now
+        except (OSError, IOError, TypeError, ValueError):
+            self.logger.exception('ERROR writing container sync recon cache')
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except OSError:
+                pass
     
-    # row를 하나의 batch로 묶어서 가져온다
-    def _get_row_batch(self, broker, sync_point, stop_sync_point=None):
-        rows = broker.get_items_since(sync_point, self.sync_row_batch_size)
-        if stop_sync_point is not None:
-            rows = [row for row in rows
-                    if row['ROWID'] <= stop_sync_point]
-        return rows
-
-    # row 작업을 한 번에 실행
-    def _run_row_batch(self, rows, sync_to, user_key, broker, info,
-                       realm, realm_key):
-        if not rows:
-            return []
-
-        # 병렬이 필요 없으면 바로 실행
-        if self.sync_row_concurrency <= 1 or len(rows) == 1:
-            return [(row, self.container_sync_row(
-                row, sync_to, user_key, broker, info, realm, realm_key))
-                for row in rows]
-
-        # 병렬 실행 수는 row 수와 동시성 제한 중 작은 쪽을 쓴다
-        pool_size = min(self.sync_row_concurrency, len(rows))
-        with ContextPool(pool_size) as pool:
-            coros = []
-            for row in rows:
-                # 각 row 작업을 먼저 던져 두고 나중에 결과를 모은다
-                coros.append((row, pool.spawn(
-                    self.container_sync_row, row, sync_to, user_key,
-                    broker, info, realm, realm_key)))
-            # 제출한 순서대로 결과를 모은다
-            return [(row, coro.wait()) for row, coro in coros]
-
-    # 현재 노드가 nodes에서 몇 번째인지 찾기
-    # 이 부분은 차후 contaienr_id로 교체 바람
-    def _get_my_node_index(self, db_file, nodes):
-        for i, node in enumerate(nodes):
-            if is_local_device(self._myips, self._myport,
-                               node['ip'], node['port']):
-                return i
-        return None
-
     # memcached에서 retry state를 읽어 온다. 없으면 초기값을 만든다
     def _read_retry_state(self, info, sync_point2, node_count):
         retry_state = {'rotation': 0, 'slots': {}}
         retry_cache_prefix = 'container-sync/slot/%s' % (
-            hash_path(info['account'], info['container']),)
+            hash_path(info['account'], info['container'], None),)
         if self.retry_memcache:
             retry_state['rotation'] = (
-                self.retry_memcache.get('%s/rotation' % retry_cache_prefix) or 0
+                self.retry_memcache.get('%s/rotation' %
+                                        retry_cache_prefix) or 0
             ) % node_count
         for owner_index in range(node_count):
             cached_retry_slot = None
             if self.retry_memcache:
                 cached_retry_slot = self.retry_memcache.get(
                     '%s/%s' % (retry_cache_prefix, owner_index))
-            retry_state['slots'][str(owner_index)] = \
-                self._normalize_retry_slot(cached_retry_slot, sync_point2)
+            # 기존에 retry_slot이 없으면 생성
+            cached_retry_slot = cached_retry_slot or {}
+            point = max(
+                sync_point2,
+                cached_retry_slot.get('point', sync_point2))
+            retry_state['slots'][str(owner_index)] = {'point': point}
         return retry_state
 
-    def _retry_slot_points(self, retry_state):
-        return {k: v['point'] for k, v in retry_state['slots'].items()}
-    
-    # 읽어 온 retry slot 값을 기본 형태로 맞추기
-    def _normalize_retry_slot(self, retry_slot, sync_point2):
-        retry_slot = retry_slot or {}
-        point = max(sync_point2, retry_slot.get('point', sync_point2))
-        return {'point': point}
-    
     # owner의 retry_point를 target_sync_point1까지 진행
     def _sync_retry_slot(self, owner_index, retry_slot, broker, info,
                          sync_to, user_key, realm, realm_key, stop_at,
                          target_sync_point1, node_count):
         retry_point = retry_slot['point']
-        batches_since_flush = 0
 
         while time() < stop_at and retry_point < target_sync_point1:
-            rows = self._get_row_batch(
-                broker, retry_point, target_sync_point1)
+            # 1. GET: 배치 단위로 row를 가져옴
+            rows = broker.get_items_since(
+                retry_point, self.sync_row_batch_size)
+            rows = [row for row in rows
+                    if row['ROWID'] <= target_sync_point1]
             if not rows:
                 break
 
-            # 각 row가 내 몫인지 먼저 표시
-            rows_with_owner = []
-            for row in rows:
-                key = hash_path(
-                    info['account'], info['container'], row['name'],
-                    raw_digest=True)
-                rows_with_owner.append(
-                    (row, unpack_from('>I', key)[0] % node_count
-                     == owner_index))
+            # 2. Calculate Owner: batch마다 owner 계산해서 내 몫인 row만 처리
+            rows_with_owner = [
+                (row, unpack_from(
+                    '>I', hash_path(
+                        info['account'], info['container'], row['name'],
+                        raw_digest=True))[0] % node_count == owner_index)
+                for row in rows]
+            owned_rows = [
+                row for row, is_owned in rows_with_owner if is_owned]
 
-            # 내 몫인 row만 실제 sync 하고, 성공 여부만 순서대로 꺼내 쓴다.
-            owned_results = iter(success for _, success in self._run_row_batch(
-                [row for row, is_owned in rows_with_owner if is_owned],
-                sync_to, user_key, broker, info, realm,
-                realm_key))
+            # 3. Sync: owner 몫인 row는 병렬로 작업을 던져서 처리
+            pool_size = min(self.sync_row_concurrency, len(owned_rows))
+            with ContextPool(pool_size) as pool:
+                row_sync_waiters = [
+                    pool.spawn(
+                        self.container_sync_row, row, sync_to, user_key,
+                        broker, info, realm, realm_key)
+                    for row in owned_rows]
+                # 순서대로 wait하며 결과를 회수
+                owned_row_sync_results = iter([
+                    row_sync_waiter.wait()
+                    for row_sync_waiter in row_sync_waiters])
 
-            # retry_point는 전체 row 순서를 따라가야 한다.
-            # owner 몫이면 결과를 확인하고, 아니면 point만 넘긴다.
+            # retry_point는 전체 row 순서를 따라감
+            # owner 몫이면 결과를 확인하고, 아니면 point만 전진
             for row, is_owned in rows_with_owner:
                 if is_owned:
-                    success = next(owned_results)
+                    success = next(owned_row_sync_results)
                     if not success:
                         retry_slot['point'] = retry_point
                         return retry_slot
                 retry_point = row['ROWID']
 
-            batches_since_flush += 1
-            if batches_since_flush >= self.retry_point_flush_batches:
-                retry_slot['point'] = retry_point
-                self._store_retry_slot(info, owner_index, retry_slot)
-                batches_since_flush = 0
+            retry_slot['point'] = retry_point
+            self._store_retry_slot(info, owner_index, retry_slot)
+            broker.set_x_container_sync_points(None, retry_point)
 
         retry_slot['point'] = retry_point
         return retry_slot
@@ -434,19 +616,19 @@ class ContainerSync(Daemon):
     # 현재 노드의 point를 memcached에 저장
     def _store_retry_slot(self, info, owner_index, retry_slot):
         retry_cache_prefix = 'container-sync/slot/%s' % (
-            hash_path(info['account'], info['container']),)
+            hash_path(info['account'], info['container'], None),)
         if self.retry_memcache:
             self.retry_memcache.set(
                 '%s/%s' % (retry_cache_prefix, owner_index),
                 retry_slot)
 
-    # retry slot 저장 후 memcahced의 retry State를 다시 읽고,
+    # retry slot 저장 후 memcahced의 retry state를 다시 읽고,
     # 완료면 rotation을 0으로 되돌리고 아니면 +1
     def _finalize_retry_state(self, info, retry_state, sync_point2,
                               target_sync_point1, node_count):
         # 먼저 memcached의 retry_state를 다시 읽는다
         retry_state = self._read_retry_state(info, sync_point2, node_count)
-        # 모든 노드가 target_sync_point1까지 끝났으면
+        # 1. Complete Check: 모든 노드가 target_sync_point1까지 끝났으면
         # sp2와 slot point를 모두 target_sync_point1로 맞추고
         # 다음 retry window를 위해 rotation을 0으로 되돌린다
         if all(state['point'] >= target_sync_point1
@@ -454,15 +636,15 @@ class ContainerSync(Daemon):
             return self._complete_retry_state(
                 info, retry_state, target_sync_point1, node_count)
 
-        # 아직 미완료 slot이 있으면 현재 공통 진행 지점은 min(point)
+        # 2. Advance: 아직 미완료 slot이 있으면 현재 공통 진행 지점은 min(point)
         sync_point2 = min(
             state['point'] for state in retry_state['slots'].values())
         if not self.retry_memcache:
             return sync_point2, retry_state
 
-        # rotation 증가는 한 sync당 한 노드만 하도록 lock으로 막는다
+        # 3. Lock For Rotation: rotation 증가는 한 sync당 한 노드만 하도록 lock으로 막는다
         retry_cache_prefix = 'container-sync/slot/%s' % (
-            hash_path(info['account'], info['container']),)
+            hash_path(info['account'], info['container'], None),)
         lock_key = '%s/rotation-lock/%s/%s' % (
             retry_cache_prefix, target_sync_point1, self.run_id)
         # 같은 sync 안에서만 lock이 살아 있으면 되므로 container_time에 맞춘다
@@ -471,7 +653,7 @@ class ContainerSync(Daemon):
         if lock_value != 1:
             return sync_point2, retry_state
 
-        # lock을 잡은 노드만 최신 상태를 다시 보고
+        # 4. Recheck And Rotate: lock을 잡은 노드만 최신 상태를 다시 보고
         # 완료면 rotation을 0으로, 미완료면 rotation을 한 칸 올린다
         retry_state = self._read_retry_state(info, sync_point2, node_count)
         if all(state['point'] >= target_sync_point1
@@ -483,8 +665,6 @@ class ContainerSync(Daemon):
                 state['point'] for state in retry_state['slots'].values())
             retry_state['rotation'] = (
                 retry_state['rotation'] + 1) % node_count
-            retry_cache_prefix = 'container-sync/slot/%s' % (
-                hash_path(info['account'], info['container']),)
             if self.retry_memcache:
                 self.retry_memcache.set(
                     '%s/rotation' % retry_cache_prefix,
@@ -497,7 +677,7 @@ class ContainerSync(Daemon):
                               target_sync_point1, node_count):
         retry_state['rotation'] = 0
         retry_cache_prefix = 'container-sync/slot/%s' % (
-            hash_path(info['account'], info['container']),)
+            hash_path(info['account'], info['container'], None),)
         if self.retry_memcache:
             self.retry_memcache.set(
                 '%s/rotation' % retry_cache_prefix,
@@ -518,6 +698,8 @@ class ContainerSync(Daemon):
         :param path: the path to a container db
         """
         broker = None
+        info = None
+        container_started = time()
         try:
             broker = ContainerBroker(path, logger=self.logger)
             # The path we pass to the ContainerBroker is a real path of
@@ -534,6 +716,8 @@ class ContainerSync(Daemon):
                     self.sync_store.remove_synced_container(broker)
                 raise
 
+            self._recon_incr_scan('scanned_containers')
+
             x, nodes = self.container_ring.get_nodes(info['account'],
                                                      info['container'])
             for ordinal, node in enumerate(nodes):
@@ -541,21 +725,22 @@ class ContainerSync(Daemon):
                                    node['ip'], node['port']):
                     break
             else:
+                self._recon_record_container(
+                    info, 'skipped', start_time=container_started,
+                    reason='not-local', max_row=broker.get_max_row())
                 return
-            
-            # 위 gate와는 별도로, retry 분배에 쓸 현재 프로세스의
-            # 안정적인 self node index를 device + ip/port로 구한다
-            node_index = self._get_my_node_index(
-                broker.db_file, nodes)
-            if node_index is None:
-                return
-            
+
             if broker.metadata.get(SYSMETA_VERSIONS_CONT):
                 self.container_skips += 1
                 self.logger.increment('skips')
                 self.logger.warning('Skipping container %s/%s with '
                                     'object versioning configured' % (
                                         info['account'], info['container']))
+                self._recon_record_container(
+                    info, 'skipped', start_time=container_started,
+                    reason='object-versioning-configured',
+                    max_row=broker.get_max_row(), node_index=ordinal,
+                    node_count=len(nodes))
                 return
             if not broker.is_deleted():
                 sync_to = None
@@ -570,6 +755,11 @@ class ContainerSync(Daemon):
                 if not sync_to or not user_key:
                     self.container_skips += 1
                     self.logger.increment('skips')
+                    self._recon_record_container(
+                        info, 'skipped', start_time=container_started,
+                        sync_point1=sync_point1, sync_point2=sync_point2,
+                        max_row=broker.get_max_row(), node_index=ordinal,
+                        node_count=len(nodes), reason='missing-sync-metadata')
                     return
                 err, sync_to, realm, realm_key = validate_sync_to(
                     sync_to, self.allowed_sync_hosts, self.realms_conf)
@@ -580,31 +770,40 @@ class ContainerSync(Daemon):
                          'validate_sync_to_err': err})
                     self.container_failures += 1
                     self.logger.increment('failures')
+                    self._recon_record_container(
+                        info, 'failure', start_time=container_started,
+                        sync_point1=sync_point1, sync_point2=sync_point2,
+                        max_row=broker.get_max_row(), node_index=ordinal,
+                        node_count=len(nodes), reason='invalid-sync-to')
                     return
                 start_at = time()
+                self.run_id = int(start_at) // 60
                 stop_at = start_at + self.container_time
                 next_sync_point = None
                 sync_stage_time = start_at
+                retry_state = None
+                sync_completed = False
                 try:
+                    # Phase 1 (sync_point2 < sync_point1)
                     if sync_point2 < sync_point1:
                         node_count = len(nodes)
+                        # 1. Read: retry_state를 읽고 로컬 sp2를 최신으로 맞춘다
                         target_sync_point1 = sync_point1
                         retry_state = self._read_retry_state(
                             info, sync_point2, node_count)
                         rotation = retry_state['rotation']
-                        # retry_state를 읽고 로컬 sp2를 최신으로 맞춘다
                         sync_point2 = min(
                             state['point']
                             for state in retry_state['slots'].values())
                         broker.set_x_container_sync_points(None, sync_point2)
 
-                        # 이번 rotation에서 현재 노드가 맡은 owner slot만 처리
+                        # 2. Sync: 이번 rotation에서 현재 노드가 맡은 owner slot만 처리
                         updated_owners = []
                         for owner_index in range(node_count):
                             retry_slot = retry_state['slots'][
                                 str(owner_index)]
                             if (owner_index + rotation) % \
-                                    node_count != node_index:
+                                    node_count != ordinal:
                                 continue
                             retry_state['slots'][str(owner_index)] = \
                                 self._sync_retry_slot(
@@ -614,69 +813,105 @@ class ContainerSync(Daemon):
                                     node_count)
                             updated_owners.append(owner_index)
 
-                        # 이번 sync에서 바뀐 owner slot의 point를 memcached에 저장
+                        # 3. Store: 이번 sync에서 바뀐
+                        # owner slot의 point를 memcached에 저장
                         for owner_index in updated_owners:
                             self._store_retry_slot(
                                 info, owner_index,
                                 retry_state['slots'][str(owner_index)])
 
-                        # 최신 retry_state를 다시 보고 rotation과 sp2를 최종 정리
+                        # 4. Finalize: 최신 retry_state를 다시 보고
+                        # rotation과 sp2를 최종 정리
                         sync_point2, retry_state = self._finalize_retry_state(
                             info, retry_state, sync_point2,
                             target_sync_point1, node_count)
-                        self.logger.info(
-                            '[RETRY_STATE_DONE] %s/%s node_idx=%s rot=%s '
-                            'slots=%s sp2=%s',
-                            info['account'], info['container'],
-                            node_index, retry_state['rotation'],
-                            self._retry_slot_points(retry_state),
-                            sync_point2)
                         broker.set_x_container_sync_points(None, sync_point2)
                     next_sync_point = sync_point2
                     sync_stage_time = time()
-                    # row는 local owner가 처리하고, DB sync point 갱신은 batch로 묶는다
-                    pending_new = collections.deque()
+
+                    # Phase 2 (sync_point1 <= new row)
+                    submitted_row_syncs = collections.deque()
                     with ContextPool(self.sync_row_concurrency) as pool:
                         while sync_stage_time < stop_at:
-                            rows = self._get_row_batch(broker, sync_point1)
+                            rows = broker.get_items_since(sync_point1, 1)
                             if not rows:
                                 break
-                            for row in rows:
-                                # 새 row의 owner가 현재 노드면 이번 sync에서 바로 처리한다
-                                key = hash_path(
-                                    info['account'], info['container'],
-                                    row['name'], raw_digest=True)
-                                if unpack_from('>I', key)[0] % \
-                                        len(nodes) == ordinal:
-                                    pending_new.append((row, pool.spawn(
-                                        self.container_sync_row, row, sync_to,
-                                        user_key, broker, info, realm,
-                                        realm_key)))
-                                    if len(pending_new) >= \
-                                            self.sync_row_concurrency:
-                                        _, done_coro = \
-                                            pending_new.popleft()
-                                        done_coro.wait()
-                                sync_point1 = row['ROWID']
 
+                            row = rows[0]
+                            # 1. Calculate Owner: 새 row의 owner가 현재 노드면
+                            # 이번 sync에서 바로 처리한다
+                            if unpack_from(
+                                    '>I', hash_path(
+                                        info['account'], info['container'],
+                                        row['name'], raw_digest=True)
+                            )[0] % len(nodes) == ordinal:
+                                # 2. Sync: 작업은 비동기로 던져 두고,
+                                # 결과 회수는 아래 wait에서 한 번에 몰아서 한다
+                                submitted_row_syncs.append((row, pool.spawn(
+                                    self.container_sync_row, row, sync_to,
+                                    user_key, broker, info, realm,
+                                    realm_key)))
+                                if len(submitted_row_syncs) >= \
+                                        self.sync_row_concurrency:
+                                    # 3. Wait: sliding window 크기를 넘기지
+                                    # 않도록 가장 먼저 던진 작업 하나를 기다림 (wait oldest)
+                                    _, row_sync_waiter = \
+                                        submitted_row_syncs.popleft()
+                                    row_sync_waiter.wait()
+                            # 4. Advance: owner가 아니어도 새 row 영역은 모두
+                            # 지나갔다는 뜻이므로 sync_point1은 현재 row까지 전진
+                            sync_point1 = row['ROWID']
+
+                            # 5. Flush: new row 진행 지점은 한 row씩 바로 DB에 반영
                             broker.set_x_container_sync_points(
                                 sync_point1, None)
                             sync_stage_time = time()
 
-                        while pending_new:
-                            _, done_coro = pending_new.popleft()
-                            done_coro.wait()
+                        while submitted_row_syncs:
+                            _, row_sync_waiter = \
+                                submitted_row_syncs.popleft()
+                            row_sync_waiter.wait()
                     sync_stage_time = time()
                     self.container_syncs += 1
                     self.logger.increment('syncs')
+                    sync_completed = True
                 finally:
+                    max_row = broker.get_max_row()
                     self.container_report(start_at, sync_stage_time,
                                           sync_point1,
                                           next_sync_point,
-                                          info, broker.get_max_row())
+                                          info, max_row)
+                    if sync_completed:
+                        self._recon_record_container(
+                            info, 'success', start_time=start_at,
+                            end_time=sync_stage_time,
+                            sync_point1=sync_point1,
+                            sync_point2=next_sync_point,
+                            max_row=max_row, node_index=ordinal,
+                            node_count=len(nodes), retry_state=retry_state,
+                            sync_to=sync_to,
+                            time_exhausted=sync_stage_time >= stop_at)
+            else:
+                self._recon_record_container(
+                    info, 'skipped', start_time=container_started,
+                    sync_point1=info.get('x_container_sync_point1'),
+                    sync_point2=info.get('x_container_sync_point2'),
+                    max_row=broker.get_max_row(), node_index=ordinal,
+                    node_count=len(nodes), reason='deleted-container')
         except (Exception, Timeout):
             self.container_failures += 1
             self.logger.increment('failures')
+            if info:
+                try:
+                    max_row = broker.get_max_row() if broker else None
+                except (Exception, Timeout):
+                    max_row = None
+                self._recon_record_container(
+                    info, 'failure', start_time=container_started,
+                    end_time=time(),
+                    sync_point1=info.get('x_container_sync_point1'),
+                    sync_point2=info.get('x_container_sync_point2'),
+                    max_row=max_row, reason='exception')
             self.logger.exception('ERROR Syncing %s',
                                   broker if broker else path)
 
@@ -778,6 +1013,7 @@ class ContainerSync(Daemon):
         """
         try:
             start_time = time()
+            self._recon_total('row_attempts')
             # extract last modified time from the created_at value
             ts_data, ts_ctype, ts_meta = decode_timestamps(
                 row['created_at'])
@@ -794,6 +1030,10 @@ class ContainerSync(Daemon):
                                   logger=self.logger,
                                   timeout=self.conn_timeout)
                 except ClientException as err:
+                    if err.http_status == HTTP_NOT_FOUND:
+                        self._recon_total('remote_not_founds')
+                    elif err.http_status == HTTP_CONFLICT:
+                        self._recon_total('remote_conflicts')
                     if err.http_status not in (
                             HTTP_NOT_FOUND, HTTP_CONFLICT):
                         raise
@@ -801,12 +1041,16 @@ class ContainerSync(Daemon):
                 self.container_stats['deletes'] += 1
                 self.logger.increment('deletes')
                 self.logger.timing_since('deletes.timing', start_time)
+                self._recon_total('deletes')
+                self._recon_total('row_successes')
             else:
                 # when sync'ing a live object, use ts_meta - this is the time
                 # at which the source object was last modified by a PUT or POST
                 if self._object_in_remote_container(row['name'],
                                                     sync_to, user_key, realm,
                                                     realm_key, ts_meta):
+                    self._recon_total('remote_head_skips')
+                    self._recon_total('row_successes')
                     return True
                 exc = None
                 # look up for the newest one; the symlink=get query-string has
@@ -836,6 +1080,8 @@ class ContainerSync(Daemon):
                         'Skipping versioning symlink %s/%s/%s ' % (
                             info['account'], info['container'],
                             row['name']))
+                    self._recon_total('versioning_symlink_skips')
+                    self._recon_total('row_successes')
                     return True
 
                 timestamp = Timestamp(
@@ -868,6 +1114,9 @@ class ContainerSync(Daemon):
                 self.container_stats['bytes'] += row['size']
                 self.logger.increment('puts')
                 self.logger.timing_since('puts.timing', start_time)
+                self._recon_total('puts')
+                self._recon_total('bytes', row['size'])
+                self._recon_total('row_successes')
         except ClientException as err:
             if err.http_status == HTTP_UNAUTHORIZED:
                 self.logger.info(
@@ -888,6 +1137,8 @@ class ContainerSync(Daemon):
                     {'db_file': str(broker), 'row': row})
             self.container_failures += 1
             self.logger.increment('failures')
+            self._recon_total('row_failures')
+            self._recon_total('client_exception_failures')
             return False
         except (Exception, Timeout):
             self.logger.exception(
@@ -895,6 +1146,8 @@ class ContainerSync(Daemon):
                 {'db_file': str(broker), 'row': row})
             self.container_failures += 1
             self.logger.increment('failures')
+            self._recon_total('row_failures')
+            self._recon_total('unexpected_failures')
             return False
         return True
 
