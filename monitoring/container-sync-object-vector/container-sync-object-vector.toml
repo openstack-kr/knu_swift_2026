@@ -1,0 +1,78 @@
+data_dir = "/var/lib/vector/container-sync-object"
+
+[sources.container_sync_log]
+type = "file"
+include = ["/var/log/swift/container-sync.log"]
+read_from = "end"
+
+[transforms.container_sync_object_events]
+type = "remap"
+inputs = ["container_sync_log"]
+source = '''
+parsed, err = parse_regex(.message, r'^(?P<swift_ts>\S+)\s+(?P<swift_host>\S+)\s+(?P<swift_program>[^:]+):\s+.*container-sync-object-event (?P<event>\{.*\})$')
+if err != null {
+  abort
+}
+
+event, err = parse_json(parsed.event)
+if err != null {
+  abort
+}
+
+original_message = .message
+. = event
+.message = original_message
+
+del(.sync_to)
+
+.site = get_env_var("VECTOR_SITE") ?? "unknown"
+.host = if exists(.host) && .host != "" { .host } else { parsed.swift_host }
+.program = if exists(.program) && .program != "" { .program } else { parsed.swift_program }
+.event_type = "container_sync_object"
+.log_type = "container_sync_object"
+
+.timestamp = if exists(.timestamp) { parse_timestamp!(.timestamp, "%+") } else { parse_timestamp!(parsed.swift_ts, "%+") }
+.start_timestamp = if exists(.start_timestamp) { parse_timestamp!(.start_timestamp, "%+") } else { .timestamp }
+.end_timestamp = if exists(.end_timestamp) { parse_timestamp!(.end_timestamp, "%+") } else { .timestamp }
+
+.path = if exists(.path) && .path != "" { .path } else { .remote_path }
+.client_ip = "0.0.0.0"
+.remote_addr = "0.0.0.0"
+.protocol = ""
+.transaction_id = ""
+.user_agent = ""
+
+.status = to_int(.status) ?? 0
+.status_text = if exists(.status_text) && .status_text != "" { .status_text } else { "unknown" }
+.status_class = if exists(.status_class) && .status_class != "" { .status_class } else { "unknown" }
+.bytes = to_int(.bytes) ?? 0
+.bytes_sent = to_int(.bytes_sent) ?? .bytes
+.object_bytes = to_int(.object_bytes) ?? 0
+.request_time = to_float(.request_time) ?? 0.0
+.duration_ms = to_float(.duration_ms) ?? 0.0
+.row_id = to_int(.row_id) ?? 0
+.deleted = to_int(.deleted) ?? 0
+.storage_policy_index = to_int(.storage_policy_index) ?? 0
+.error_code = if .outcome == "failure" { .status } else { 0 }
+'''
+
+[sinks.quickwit_container_sync_objects]
+type = "http"
+inputs = ["container_sync_object_events"]
+uri = "${QUICKWIT_INGEST_URL}"
+method = "post"
+framing.method = "newline_delimited"
+encoding.codec = "json"
+compression = "none"
+
+[sinks.quickwit_container_sync_objects.request.headers]
+Content-Type = "application/json"
+
+[sinks.quickwit_container_sync_objects.batch]
+max_events = 100
+timeout_secs = 2
+
+[sinks.quickwit_container_sync_objects.buffer]
+type = "disk"
+max_size = 268435488
+when_full = "block"

@@ -1,0 +1,20 @@
+[Unit]
+Description=Swift Container Sync Recon Exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=EXPORTER_PORT=8010
+Environment=RECON_URLS=http://127.0.0.1:6201/recon/container-sync
+Environment=RECON_PATHS=
+Environment=REQUEST_TIMEOUT_SECONDS=5
+Environment=WEB_REFRESH_SECONDS=15
+Environment=MAX_WEB_CONTAINERS=200
+WorkingDirectory=/opt/container-sync-recon-exporter
+ExecStart=/usr/bin/python3 /opt/container-sync-recon-exporter/container_sync_recon_exporter.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
