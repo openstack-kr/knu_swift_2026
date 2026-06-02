@@ -119,7 +119,6 @@ class TestContainerSync(unittest.TestCase):
         with mock.patch('swift.container.sync.InternalClient'):
             cs = sync.ContainerSync({}, container_ring=cring)
         self.assertTrue(cs.container_ring is cring)
-        self.assertEqual(cs.sync_row_concurrency, 8)
 
     @with_tempdir
     def test_init_default_hard_coded_ic_conf(self, tempdir):
@@ -1409,6 +1408,158 @@ class TestContainerSync(unittest.TestCase):
             sync.uuid = orig_uuid
             sync.put_object = orig_put_object
             sync.head_object = orig_head_object
+
+    def test_init_sync_row_concurrency_default(self):
+        with mock.patch('swift.container.sync.InternalClient'):
+            cs = sync.ContainerSync({}, container_ring=FakeRing())
+        self.assertEqual(cs.sync_row_concurrency, 8)
+
+    def test_init_sync_row_concurrency_explicit(self):
+        with mock.patch('swift.container.sync.InternalClient'):
+            cs = sync.ContainerSync(
+                {'sync_row_concurrency': '4'},
+                container_ring=FakeRing())
+        self.assertEqual(cs.sync_row_concurrency, 4)
+
+    def test_init_sync_row_concurrency_clamped_to_one(self):
+        # 0 and negative values are clamped to 1
+        for value in ('0', '-5'):
+            with mock.patch('swift.container.sync.InternalClient'):
+                cs = sync.ContainerSync(
+                    {'sync_row_concurrency': value},
+                    container_ring=FakeRing())
+            self.assertEqual(cs.sync_row_concurrency, 1)
+
+    def test_init_sync_row_concurrency_empty_defaults_to_8(self):
+        # empty string is treated as unset (falls through to default)
+        with mock.patch('swift.container.sync.InternalClient'):
+            cs = sync.ContainerSync(
+                {'sync_row_concurrency': ''},
+                container_ring=FakeRing())
+        self.assertEqual(cs.sync_row_concurrency, 8)
+
+    def test_container_sync_phase2_uses_pool_with_concurrency(self):
+        # Phase 2 must construct ContextPool sized to sync_row_concurrency,
+        # dispatch each matching row via pool.spawn, and waitall before
+        # the with-block exits (so __exit__ does not kill in-flight work).
+        spawn_calls = []
+        pool_sizes = []
+        events = []
+
+        class FakePool(object):
+            def __init__(self, size):
+                pool_sizes.append(size)
+
+            def __enter__(self):
+                events.append('enter')
+                return self
+
+            def __exit__(self, *a):
+                events.append('exit')
+
+            def spawn(self, func, *args, **kwargs):
+                spawn_calls.append((func, args))
+
+            def waitall(self):
+                events.append('waitall')
+
+        def fake_hash_path(account, container, obj, raw_digest=False):
+            # unpack_from('>I', b'\x00' * 16)[0] % 3 == 0 == ordinal,
+            # so every row is dispatched on this node.
+            return b'\x00' * 16
+
+        fcb = FakeContainerBroker(
+            'path',
+            info={'account': 'a', 'container': 'c',
+                  'storage_policy_index': 0,
+                  'x_container_sync_point1': -1,
+                  'x_container_sync_point2': -1},
+            metadata={'x-container-sync-to': ('http://127.0.0.1/a/c', 1),
+                      'x-container-sync-key': ('key', 1)},
+            items_since=[{'ROWID': 1, 'name': 'o1', 'size': 1,
+                          'created_at': '1.0', 'deleted': False},
+                         {'ROWID': 2, 'name': 'o2', 'size': 1,
+                          'created_at': '2.0', 'deleted': False}])
+
+        with mock.patch('swift.container.sync.InternalClient'), \
+                mock.patch('swift.container.sync.hash_path',
+                           fake_hash_path), \
+                mock.patch('swift.container.sync.ContainerBroker',
+                           lambda p, logger: fcb), \
+                mock.patch('swift.container.sync.ContextPool', FakePool):
+            cring = FakeRing()
+            cs = sync.ContainerSync(
+                {'sync_row_concurrency': '3'},
+                container_ring=cring, logger=self.logger)
+            cs._myips = ['10.0.0.0']    # Match FakeRing devs[0]
+            cs._myport = 1000           # Match FakeRing devs[0]
+            cs.allowed_sync_hosts = ['127.0.0.1']
+            cs.container_sync('isa.db')
+
+        # ContextPool created with sync_row_concurrency=3
+        self.assertEqual(pool_sizes, [3])
+        # One spawn per row (both rows match ordinal)
+        self.assertEqual(len(spawn_calls), 2)
+        for func, _args in spawn_calls:
+            self.assertEqual(func, cs.container_sync_row)
+        # waitall must run inside the with-block (between enter and exit)
+        self.assertEqual(events, ['enter', 'waitall', 'exit'])
+
+    def test_container_sync_phase2_skips_rows_not_owned(self):
+        # Rows whose hash does not match this node's ordinal are skipped
+        # (not dispatched via pool.spawn) but sync_point1 still advances.
+        spawn_calls = []
+
+        class FakePool(object):
+            def __init__(self, size):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def spawn(self, func, *args, **kwargs):
+                spawn_calls.append((func, args))
+
+            def waitall(self):
+                pass
+
+        def fake_hash_path(account, container, obj, raw_digest=False):
+            # unpack_from('>I', b'\x01' * 16)[0] % 3 == 1 != 0 = ordinal,
+            # so no rows are dispatched on this node.
+            return b'\x01' * 16
+
+        fcb = FakeContainerBroker(
+            'path',
+            info={'account': 'a', 'container': 'c',
+                  'storage_policy_index': 0,
+                  'x_container_sync_point1': -1,
+                  'x_container_sync_point2': -1},
+            metadata={'x-container-sync-to': ('http://127.0.0.1/a/c', 1),
+                      'x-container-sync-key': ('key', 1)},
+            items_since=[{'ROWID': 1, 'name': 'o1', 'size': 1,
+                          'created_at': '1.0', 'deleted': False}])
+
+        with mock.patch('swift.container.sync.InternalClient'), \
+                mock.patch('swift.container.sync.hash_path',
+                           fake_hash_path), \
+                mock.patch('swift.container.sync.ContainerBroker',
+                           lambda p, logger: fcb), \
+                mock.patch('swift.container.sync.ContextPool', FakePool):
+            cring = FakeRing()
+            cs = sync.ContainerSync({}, container_ring=cring,
+                                    logger=self.logger)
+            cs._myips = ['10.0.0.0']
+            cs._myport = 1000
+            cs.allowed_sync_hosts = ['127.0.0.1']
+            cs.container_sync('isa.db')
+
+        # No spawn calls since no rows match this node's ordinal
+        self.assertEqual(spawn_calls, [])
+        # sync_point1 still advanced past the row
+        self.assertEqual(fcb.sync_point1, 1)
 
     def test_select_http_proxy_None(self):
 
