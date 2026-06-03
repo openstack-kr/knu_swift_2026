@@ -1410,11 +1410,15 @@ class TestContainerSync(unittest.TestCase):
             sync.head_object = orig_head_object
 
     def test_init_sync_row_concurrency_default(self):
+        # Default value (8) is applied when sync_row_concurrency is unset.
+        # conf 미지정 시 기본값 8 이 적용되는지 확인
         with mock.patch('swift.container.sync.InternalClient'):
             cs = sync.ContainerSync({}, container_ring=FakeRing())
         self.assertEqual(cs.sync_row_concurrency, 8)
 
     def test_init_sync_row_concurrency_explicit(self):
+        # A value provided in conf is applied as-is.
+        # conf 에 명시한 값이 그대로 적용되는지 확인
         with mock.patch('swift.container.sync.InternalClient'):
             cs = sync.ContainerSync(
                 {'sync_row_concurrency': '4'},
@@ -1422,7 +1426,8 @@ class TestContainerSync(unittest.TestCase):
         self.assertEqual(cs.sync_row_concurrency, 4)
 
     def test_init_sync_row_concurrency_clamped_to_one(self):
-        # 0 and negative values are clamped to 1
+        # 0 and negative values are clamped to 1.
+        # 0 이하 값은 1 로 보정되는지 확인
         for value in ('0', '-5'):
             with mock.patch('swift.container.sync.InternalClient'):
                 cs = sync.ContainerSync(
@@ -1431,17 +1436,23 @@ class TestContainerSync(unittest.TestCase):
             self.assertEqual(cs.sync_row_concurrency, 1)
 
     def test_init_sync_row_concurrency_empty_defaults_to_8(self):
-        # empty string is treated as unset (falls through to default)
+        # Empty string is treated as unset (falls through to default).
+        # 빈 문자열은 미지정으로 간주되어 기본값으로 fallback
         with mock.patch('swift.container.sync.InternalClient'):
             cs = sync.ContainerSync(
                 {'sync_row_concurrency': ''},
                 container_ring=FakeRing())
         self.assertEqual(cs.sync_row_concurrency, 8)
 
-    def test_container_sync_phase2_uses_pool_with_concurrency(self):
-        # Phase 2 must construct ContextPool sized to sync_row_concurrency,
-        # dispatch each matching row via pool.spawn, and waitall before
-        # the with-block exits (so __exit__ does not kill in-flight work).
+    def test_container_sync_uses_pool_for_new_rows(self):
+        # When syncing new rows, ContextPool must be sized to
+        # sync_row_concurrency, each matching row must be assigned to a
+        # worker via pool.spawn, and waitall must run before the
+        # with-block exits so __exit__ does not kill running work.
+        # 새 row 를 sync 할 때 ContextPool 이 sync_row_concurrency 크기로
+        # 생성되고, 매칭 row 마다 pool.spawn 으로 할당되며, with 종료
+        # 전에 waitall 이 호출되어 실행 중인 작업이 __exit__ 의 kill 에
+        # 끊기지 않는지 확인
         spawn_calls = []
         pool_sizes = []
         events = []
@@ -1505,9 +1516,11 @@ class TestContainerSync(unittest.TestCase):
         # waitall must run inside the with-block (between enter and exit)
         self.assertEqual(events, ['enter', 'waitall', 'exit'])
 
-    def test_container_sync_phase2_skips_rows_not_owned(self):
-        # Rows whose hash does not match this node's ordinal are skipped
-        # (not dispatched via pool.spawn) but sync_point1 still advances.
+    def test_container_sync_skips_rows_not_owned(self):
+        # Rows not owned by this node are skipped (not spawned), but
+        # sync_point1 still advances.
+        # 이 노드의 담당이 아닌 row 는 spawn 되지 않지만
+        # sync_point1 은 여전히 advance 하는지 확인
         spawn_calls = []
 
         class FakePool(object):
