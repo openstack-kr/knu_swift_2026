@@ -19,13 +19,26 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
   "id": null,
-  "links": [],
+  "links": [
+    {
+      "title": "Container Status Web",
+      "url": "http://127.0.0.1:8010/containers",
+      "targetBlank": true,
+      "type": "link"
+    },
+    {
+      "title": "Object History Web",
+      "url": "http://127.0.0.1:8010/logs",
+      "targetBlank": true,
+      "type": "link"
+    }
+  ],
   "liveNow": true,
   "panels": [
     {
       "id": 1,
-      "title": "Sync Containers",
-      "type": "stat",
+      "title": "Reporting Nodes",
+      "type": "gauge",
       "datasource": {
         "type": "prometheus",
         "uid": "swift_prometheus"
@@ -33,7 +46,7 @@
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 5,
+        "w": 4,
         "h": 5
       },
       "targets": [
@@ -43,8 +56,8 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "max(swift_container_sync_containers) or on() vector(0)",
-          "legendFormat": "Sync Containers",
+          "expr": "sum(swift_container_sync_recon_up)",
+          "legendFormat": "nodes",
           "range": false,
           "instant": true
         }
@@ -58,10 +71,9 @@
           "fields": ""
         },
         "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto"
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "sizing": "auto"
       },
       "fieldConfig": {
         "defaults": {
@@ -73,28 +85,42 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": 3
               }
             ]
           },
-          "custom": {}
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 3
         },
         "overrides": []
-      }
+      },
+      "description": "Container-sync recon exporters currently reporting metrics."
     },
     {
       "id": 2,
-      "title": "Checked Objects",
+      "title": "Failed Sync Containers",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
         "uid": "swift_prometheus"
       },
       "gridPos": {
-        "x": 5,
+        "x": 4,
         "y": 0,
-        "w": 5,
+        "w": 4,
         "h": 5
       },
       "targets": [
@@ -104,8 +130,8 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "max(swift_container_sync_checked_objects) or on() vector(0)",
-          "legendFormat": "Checked Objects",
+          "expr": "sum(swift_container_sync_recon_daemon_failed_containers) or on() vector(0)",
+          "legendFormat": "failed",
           "range": false,
           "instant": true
         }
@@ -136,24 +162,36 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
               }
             ]
           },
-          "custom": {}
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          }
         },
         "overrides": []
-      }
+      },
+      "description": "Containers that failed during the latest container-sync run."
     },
     {
       "id": 3,
-      "title": "Unsynced",
-      "type": "stat",
+      "title": "New Rows Waiting",
+      "type": "bargauge",
       "datasource": {
         "type": "prometheus",
         "uid": "swift_prometheus"
       },
       "gridPos": {
-        "x": 10,
+        "x": 8,
         "y": 0,
         "w": 4,
         "h": 5
@@ -165,8 +203,8 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "max(swift_container_sync_unsynced_objects{scope=\"all\"}) or on() vector(0)",
-          "legendFormat": "Unsynced",
+          "expr": "sum(swift_container_sync_recon_container_new_backlog_rows) or on() vector(0)",
+          "legendFormat": "new rows waiting",
           "range": false,
           "instant": true
         }
@@ -179,11 +217,14 @@
           ],
           "fields": ""
         },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto"
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "namePlacement": "auto",
+        "sizing": "auto",
+        "minVizHeight": 10,
+        "minVizWidth": 0
       },
       "fieldConfig": {
         "defaults": {
@@ -204,25 +245,35 @@
               },
               {
                 "color": "red",
-                "value": 10
+                "value": 100
               }
             ]
           },
-          "custom": {}
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 100
         },
         "overrides": []
-      }
+      },
+      "description": "Rows newer than sync_point1 waiting to be processed."
     },
     {
       "id": 4,
-      "title": "Mismatch",
-      "type": "stat",
+      "title": "Retry Rows Waiting",
+      "type": "bargauge",
       "datasource": {
         "type": "prometheus",
         "uid": "swift_prometheus"
       },
       "gridPos": {
-        "x": 14,
+        "x": 12,
         "y": 0,
         "w": 4,
         "h": 5
@@ -234,8 +285,8 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "max(swift_container_sync_mismatch_objects{scope=\"all\"}) or on() vector(0)",
-          "legendFormat": "Mismatch",
+          "expr": "sum(swift_container_sync_recon_container_retry_backlog_rows) or on() vector(0)",
+          "legendFormat": "retry rows waiting",
           "range": false,
           "instant": true
         }
@@ -248,11 +299,14 @@
           ],
           "fields": ""
         },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto"
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "namePlacement": "auto",
+        "sizing": "auto",
+        "minVizHeight": 10,
+        "minVizWidth": 0
       },
       "fieldConfig": {
         "defaults": {
@@ -273,27 +327,37 @@
               },
               {
                 "color": "red",
-                "value": 10
+                "value": 100
               }
             ]
           },
-          "custom": {}
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 100
         },
         "overrides": []
-      }
+      },
+      "description": "Rows between sync_point2 and sync_point1 waiting for the retry/safety pass."
     },
     {
       "id": 5,
-      "title": "Health",
+      "title": "Object Failure Rate",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
         "uid": "swift_prometheus"
       },
       "gridPos": {
-        "x": 18,
+        "x": 16,
         "y": 0,
-        "w": 6,
+        "w": 4,
         "h": 5
       },
       "targets": [
@@ -303,8 +367,8 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "min(swift_container_sync_last_scrape_success{scope=\"all\"}) or on() vector(0)",
-          "legendFormat": "Health",
+          "expr": "sum(rate(swift_container_sync_recon_row_failures_total[5m])) or on() vector(0)",
+          "legendFormat": "failures/s",
           "range": false,
           "instant": true
         }
@@ -325,7 +389,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "ops",
           "color": {
             "mode": "thresholds"
           },
@@ -335,32 +399,107 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
               }
             ]
           },
-          "custom": {},
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "text": "Problem",
-                  "color": "red"
-                },
-                "1": {
-                  "text": "Healthy",
-                  "color": "green"
-                }
-              },
-              "type": "value"
-            }
-          ]
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          }
         },
         "overrides": []
-      }
+      },
+      "description": "Failed object row processing rate over the last 5 minutes."
     },
     {
       "id": 6,
-      "title": "Overall Sync Lag",
+      "title": "Slowest Sync Run",
+      "type": "gauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "swift_prometheus"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "max(swift_container_sync_recon_daemon_last_run_duration_seconds) or on() vector(0)",
+          "legendFormat": "seconds",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "sizing": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 60
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 60
+        },
+        "overrides": []
+      },
+      "description": "Slowest latest container-sync run duration across reporting nodes."
+    },
+    {
+      "id": 7,
+      "title": "Waiting Rows by Node",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -379,8 +518,8 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "max(swift_container_sync_lag_seconds{scope=\"all\",quantile=\"p95\"}) or on() vector(0)",
-          "legendFormat": "p95",
+          "expr": "sum by (node) (swift_container_sync_recon_container_new_backlog_rows)",
+          "legendFormat": "new rows - {{node}}",
           "range": true,
           "instant": false
         },
@@ -390,40 +529,141 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "max(swift_container_sync_lag_seconds{scope=\"all\",quantile=\"max\"}) or on() vector(0)",
-          "legendFormat": "max",
+          "expr": "sum by (node) (swift_container_sync_recon_container_retry_backlog_rows)",
+          "legendFormat": "retry rows - {{node}}",
           "range": true,
           "instant": false
         }
       ],
       "options": {
         "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
-          "sort": "desc"
+          "sort": "none"
         }
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "short",
+          "color": {
+            "mode": "fixed"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never"
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
           }
         },
-        "overrides": []
-      }
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*knu-src-cont1.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#1f77b4"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*knu-src-cont2.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#2ca02c"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*knu-src-cont3.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ff7f0e"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^new rows.*"
+            },
+            "properties": [
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^retry rows.*"
+            },
+            "properties": [
+              {
+                "id": "custom.drawStyle",
+                "value": "bars"
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 28
+              }
+            ]
+          }
+        ]
+      },
+      "description": "New rows are solid lines; retry rows are bars. Node colors stay fixed: cont1 blue, cont2 green, cont3 orange."
     },
     {
-      "id": 7,
-      "title": "Unsynced Ratio",
-      "type": "gauge",
+      "id": 8,
+      "title": "Object Rows Processed",
+      "type": "timeseries",
       "datasource": {
         "type": "prometheus",
         "uid": "swift_prometheus"
@@ -431,7 +671,7 @@
       "gridPos": {
         "x": 12,
         "y": 5,
-        "w": 6,
+        "w": 12,
         "h": 8
       },
       "targets": [
@@ -441,31 +681,356 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "max(swift_container_sync_unsynced_ratio) or on() vector(0)",
-          "legendFormat": "Unsynced Ratio",
-          "range": false,
-          "instant": true
+          "expr": "sum(rate(swift_container_sync_recon_row_attempts_total[5m]))",
+          "legendFormat": "attempted rows/s",
+          "range": true,
+          "instant": false
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "sum(rate(swift_container_sync_recon_row_successes_total[5m]))",
+          "legendFormat": "successful rows/s",
+          "range": true,
+          "instant": false
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "sum(rate(swift_container_sync_recon_row_failures_total[5m]))",
+          "legendFormat": "failed rows/s",
+          "range": true,
+          "instant": false
         }
       ],
       "options": {
-        "reduceOptions": {
-          "values": false,
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": ""
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
         },
-        "orientation": "auto",
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1,
+          "unit": "ops",
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "attempted rows/s"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794f2"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 8
+              },
+              {
+                "id": "custom.showPoints",
+                "value": "never"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "successful rows/s"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#73bf69"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 14
+              },
+              {
+                "id": "custom.showPoints",
+                "value": "never"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed rows/s"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f2495c"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.showPoints",
+                "value": "always"
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Object row attempt, success, and failure rates."
+    },
+    {
+      "id": 9,
+      "title": "Remote PUT/DELETE Rate",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "swift_prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "sum(rate(swift_container_sync_recon_puts_total[5m]))",
+          "legendFormat": "PUT/s",
+          "range": true,
+          "instant": false
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "sum(rate(swift_container_sync_recon_deletes_total[5m]))",
+          "legendFormat": "DELETE/s",
+          "range": true,
+          "instant": false
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "sum(rate(swift_container_sync_recon_remote_head_skips_total[5m]))",
+          "legendFormat": "already current/s",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PUT/s"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#73bf69"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 12
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DELETE/s"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ff9830"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 8
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "already current/s"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794f2"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Remote object PUT/DELETE rate, plus rows skipped because the remote object was already current."
+    },
+    {
+      "id": 10,
+      "title": "Run Time by Node",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "swift_prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "max by (node) (swift_container_sync_recon_daemon_last_run_duration_seconds)",
+          "legendFormat": "{{node}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed"
           },
           "thresholds": {
             "mode": "absolute",
@@ -476,31 +1041,85 @@
               },
               {
                 "color": "orange",
-                "value": 0.01
+                "value": 30
               },
               {
                 "color": "red",
-                "value": 0.05
+                "value": 60
               }
             ]
           },
-          "custom": {}
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          }
         },
-        "overrides": []
-      }
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*knu-src-cont1.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#1f77b4"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*knu-src-cont2.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#2ca02c"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*knu-src-cont3.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ff7f0e"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Latest container-sync run duration per node."
     },
     {
-      "id": 8,
-      "title": "Objects by Server",
+      "id": 11,
+      "title": "Container Scan Counts",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
         "uid": "swift_prometheus"
       },
       "gridPos": {
-        "x": 18,
-        "y": 5,
-        "w": 6,
+        "x": 0,
+        "y": 21,
+        "w": 12,
         "h": 8
       },
       "targets": [
@@ -510,8 +1129,8 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "max(swift_container_sync_source_objects{scope=\"all\"}) or on() vector(0)",
-          "legendFormat": "source",
+          "expr": "sum by (node) (swift_container_sync_recon_daemon_scanned_containers)",
+          "legendFormat": "scanned - {{node}}",
           "range": true,
           "instant": false
         },
@@ -521,39 +1140,239 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "max(swift_container_sync_replica_objects{scope=\"all\"}) or on() vector(0)",
-          "legendFormat": "replica",
+          "expr": "sum by (node) (swift_container_sync_recon_daemon_synced_containers)",
+          "legendFormat": "synced - {{node}}",
+          "range": true,
+          "instant": false
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "sum by (node) (swift_container_sync_recon_daemon_failed_containers)",
+          "legendFormat": "failed - {{node}}",
+          "range": true,
+          "instant": false
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "sum by (node) (swift_container_sync_recon_daemon_skipped_containers)",
+          "legendFormat": "skipped - {{node}}",
           "range": true,
           "instant": false
         }
       ],
       "options": {
         "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
-          "sort": "desc"
+          "sort": "none"
         }
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never"
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^scanned.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#5794f2"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 6
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^synced.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#73bf69"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 10
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^failed.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f2495c"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.showPoints",
+                "value": "always"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^skipped.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#fade2a"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 4
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Status colors are fixed: scanned blue, synced green, failed red, skipped amber."
+    },
+    {
+      "id": 12,
+      "title": "Replicated Bytes",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "swift_prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "sum(rate(swift_container_sync_recon_bytes_total[5m]))",
+          "legendFormat": "bytes/s",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
           }
         },
         "overrides": []
-      }
+      },
+      "description": "Bytes replicated by container-sync per second."
     },
     {
-      "id": 9,
-      "title": "Lagging Containers",
+      "id": 13,
+      "title": "Recon Freshness by Node",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -561,7 +1380,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 13,
+        "y": 29,
         "w": 24,
         "h": 8
       },
@@ -572,44 +1391,177 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "topk(10, swift_container_sync_unsynced_objects{source_container!=\"\",replica_container!=\"\"})",
-          "legendFormat": "{{source_container}} -> {{replica_container}}",
+          "expr": "time() - max by (node) (swift_container_sync_recon_last_update_timestamp_seconds)",
+          "legendFormat": "{{node}}",
           "range": true,
           "instant": false
         }
       ],
       "options": {
         "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
-          "sort": "desc"
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*knu-src-cont1.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#1f77b4"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*knu-src-cont2.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#2ca02c"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*knu-src-cont3.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ff7f0e"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "description": "Age of the latest recon update. Higher values mean stale container-sync telemetry."
+    },
+    {
+      "id": 15,
+      "title": "Containers With Most Waiting Rows",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "swift_prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "swift_prometheus"
+          },
+          "expr": "topk(20, swift_container_sync_recon_container_new_backlog_rows + swift_container_sync_recon_container_retry_backlog_rows)",
+          "legendFormat": "{{node}} {{account}}/{{container}}",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
         }
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never"
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
           }
         },
         "overrides": []
-      }
+      },
+      "transformations": [],
+      "description": "Top containers by combined new and retry waiting rows."
     }
   ],
-  "refresh": "10s",
+  "refresh": "15s",
   "schemaVersion": 39,
+  "style": "dark",
   "tags": [
     "swift",
-    "prometheus",
-    "sync-lag",
-    "container-sync"
+    "container-sync",
+    "recon",
+    "prometheus"
   ],
   "templating": {
     "list": []
@@ -622,6 +1574,6 @@
   "timezone": "browser",
   "title": "Swift Container Sync",
   "uid": "swift_container_sync",
-  "version": 4,
+  "version": 3,
   "weekStart": ""
 }

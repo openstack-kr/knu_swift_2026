@@ -284,6 +284,8 @@ journalctl -u swift-proxy-log-replica -f
 
 `container-sync`는 object 단위 처리 결과를 `/var/log/swift/container-sync.log`에 `container-sync-object-event { ... }` 형태의 JSON 로그로 남깁니다. 이 로그는 recon과 분리된 이력 데이터입니다. recon은 현재 상태/시계열 지표용이고, object event log는 Quickwit에서 account/container/object 기준으로 검색하는 용도입니다.
 
+daemon은 account/container/object, method, outcome, reason, timestamp, row id 같은 원천 이벤트만 남깁니다. Quickwit index에 맞춘 `source_path`, `remote_path`, `status_class`, `duration_ms`, `bytes_sent` 같은 보강 필드는 Vector remap 단계에서 생성합니다.
+
 운영 표준 경로는 각 container node에서 Vector가 로컬 로그 파일을 tail해서 Quickwit으로 전송하는 방식입니다. tst2가 SSH로 각 node의 로그를 끌어오는 Python object collector 방식은 더 이상 표준 경로가 아닙니다.
 
 데이터 흐름:
@@ -359,4 +361,4 @@ curl 'http://127.0.0.1:7280/api/v1/swift-container-sync-objects/search?query=met
 - `start_timestamp`, `end_timestamp`, `request_time`, `duration_ms`
 - `row_id`, `deleted`, `object_bytes`, `bytes_sent`
 
-민감한 원격 endpoint 전체 URL인 `sync_to`는 로그/Vector 단계에서 제거하고, 검색에 필요한 path 정보만 남깁니다.
+민감한 원격 endpoint 전체 URL인 `sync_to`는 daemon 로그에 남기지 않습니다. Vector는 daemon이 남긴 `remote_container_path`와 object 이름으로 검색에 필요한 path 필드를 보강합니다.

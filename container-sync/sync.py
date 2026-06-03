@@ -920,23 +920,6 @@ class ContainerSync(Daemon):
         return datetime.fromtimestamp(
             timestamp, timezone.utc).isoformat().replace('+00:00', 'Z')
 
-    def _event_status_class(self, status):
-        try:
-            status = int(status)
-        except (TypeError, ValueError):
-            status = 0
-        if 200 <= status <= 599:
-            return '%sxx' % (status // 100)
-        return 'unknown'
-
-    def _object_path(self, account, container, obj):
-        return '/v1/%s/%s/%s' % (
-            quote(account), quote(container), quote(obj))
-
-    def _remote_object_path(self, sync_to, obj):
-        parsed = urlparse(sync_to)
-        return '%s/%s' % (parsed.path.rstrip('/'), quote(obj))
-
     def _log_object_sync_event(self, row, info, sync_to, method, outcome,
                                start_time, end_time=None, http_status=0,
                                reason='', bytes_transferred=0):
@@ -944,10 +927,8 @@ class ContainerSync(Daemon):
         object_name = row.get('name', '')
         account = info.get('account', '')
         container = info.get('container', '')
-        source_path = self._object_path(account, container, object_name)
         parsed_sync_to = urlparse(sync_to)
         remote_container_path = parsed_sync_to.path.rstrip('/')
-        remote_path = self._remote_object_path(sync_to, object_name)
         try:
             row_id = int(row.get('ROWID', 0) or 0)
         except (TypeError, ValueError):
@@ -956,10 +937,18 @@ class ContainerSync(Daemon):
             http_status = int(http_status or 0)
         except (TypeError, ValueError):
             http_status = 0
+        request_time = max(0, end_time - start_time)
+        try:
+            bytes_transferred = max(0, int(bytes_transferred or 0))
+        except (TypeError, ValueError):
+            bytes_transferred = 0
+        try:
+            object_bytes = max(0, int(row.get('size', 0) or 0))
+        except (TypeError, ValueError):
+            object_bytes = 0
 
         event = {
             'event_type': 'container_sync_object',
-            'log_type': 'container_sync_object',
             'timestamp': self._event_timestamp(end_time),
             'start_timestamp': self._event_timestamp(start_time),
             'end_timestamp': self._event_timestamp(end_time),
@@ -968,21 +957,14 @@ class ContainerSync(Daemon):
             'account': account,
             'container': container,
             'object': object_name,
-            'source_path': source_path,
             'remote_container_path': remote_container_path,
-            'remote_path': remote_path,
-            'path': remote_path,
             'method': method,
             'outcome': outcome,
             'reason': reason or '',
             'status': http_status,
-            'status_text': str(http_status) if http_status else 'unknown',
-            'status_class': self._event_status_class(http_status),
-            'request_time': max(0, end_time - start_time),
-            'duration_ms': max(0, end_time - start_time) * 1000.0,
-            'bytes': max(0, int(bytes_transferred or 0)),
-            'bytes_sent': max(0, int(bytes_transferred or 0)),
-            'object_bytes': max(0, int(row.get('size', 0) or 0)),
+            'request_time': request_time,
+            'bytes': bytes_transferred,
+            'object_bytes': object_bytes,
             'row_id': row_id,
             'deleted': 1 if row.get('deleted') else 0,
             'created_at': row.get('created_at', ''),

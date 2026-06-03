@@ -58,9 +58,11 @@ Recon은 daemon 상태와 수치형 진행률을 위한 데이터이고, Quickwi
 
 Container Sync가 object row 하나를 처리할 때 PUT, DELETE, HEAD skip, failure 결과를
 `container-sync-object-event` prefix가 붙은 JSON log로 `/var/log/swift/container-sync.log`에 기록한다.
-각 container node의 Vector는 이 파일을 tail 하면서 해당 prefix의 로그만 필터링하고 JSON을 파싱한다.
-민감하거나 중복되는 `sync_to` 원문은 저장하지 않고, account/container/object/path/method/outcome/reason
-필드를 Quickwit `swift-container-sync-objects` index로 전송한다.
+daemon은 account/container/object, method, outcome, reason, timestamp, row id 같은 원천 이벤트만 남긴다.
+각 container node의 Vector는 이 파일을 tail 하면서 해당 prefix의 로그만 필터링하고 JSON을 파싱한 뒤
+source_path, remote_path, status_class, duration_ms, bytes_sent 같은 Quickwit 검색/집계용 필드를 보강한다.
+민감한 원격 endpoint 전체 URL인 `sync_to` 원문은 저장하지 않고, 검색에 필요한 path 정보만 Quickwit
+`swift-container-sync-objects` index로 전송한다.
 
 이후 운영자는 Quickwit 또는 Grafana datasource에서 다음처럼 검색할 수 있다.
 

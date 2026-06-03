@@ -446,6 +446,236 @@ def option_html(options, selected):
     return ''.join(items)
 
 
+def nav_html(active):
+    links = [
+        ("/", "Overview", "overview"),
+        ("/containers", "Container Status", "containers"),
+        ("/logs", "Object History", "logs"),
+    ]
+    return ''.join(
+        '<a class="%s" href="%s">%s</a>' % (
+            'active' if key == active else '', href, h(label))
+        for href, label, key in links)
+
+
+
+def filter_container_rows(rows, account_filter="", container_filter=""):
+    account_filter = account_filter.strip()
+    container_filter = container_filter.strip()
+    filtered = []
+    for row in rows:
+        account = str(row.get("account", ""))
+        container = str(row.get("container", row.get("container_key", "")))
+        if account_filter and account != account_filter:
+            continue
+        if container_filter and container != container_filter:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def render_container_status(params):
+    account_filter = param_value(params, "account")
+    container_filter = param_value(params, "container")
+    object_filter = param_value(params, "object")
+    max_hits = param_value(params, "max_hits", "20")
+
+    states = collect_state()
+    all_rows = collect_web_rows(states, limit=False)
+    rows = filter_container_rows(all_rows, account_filter, container_filter)
+
+    total_new_backlog = sum(number(row.get("new_backlog_rows")) for row in rows)
+    total_retry_backlog = sum(number(row.get("retry_backlog_rows")) for row in rows)
+    failures = sum(1 for row in rows if row.get("last_status") == "failure")
+
+    quickwit_params = {
+        "account": [account_filter],
+        "container": [container_filter],
+        "object": [object_filter],
+        "max_hits": [max_hits or "20"],
+    }
+    if account_filter or container_filter or object_filter:
+        object_result = quickwit_search(quickwit_params)
+    else:
+        object_result = {
+            "enabled": bool(QUICKWIT_SEARCH_URL),
+            "query": "",
+            "max_hits": bounded_max_hits(max_hits or "20"),
+            "num_hits": 0,
+            "hits": [],
+            "errors": [],
+            "elapsed_time_micros": 0,
+            "url": QUICKWIT_SEARCH_URL,
+        }
+
+    if rows:
+        status_rows = []
+        for row in rows:
+            status = row.get("last_status", "unknown")
+            account = row.get("account", "")
+            container = row.get("container", row.get("container_key", ""))
+            logs_url = "/logs?" + urlencode({
+                "account": account,
+                "container": container,
+                "max_hits": max_hits or "20",
+            })
+            status_rows.append('''
+            <tr>
+              <td>%s</td>
+              <td>%s</td>
+              <td>%s</td>
+              <td><span class="pill %s">%s</span></td>
+              <td class="num">%s</td>
+              <td class="num">%s</td>
+              <td class="num">%s</td>
+              <td class="num">%s</td>
+              <td class="num">%s</td>
+              <td>%s</td>
+              <td>%s</td>
+              <td><a href="%s">logs</a></td>
+            </tr>''' % (
+                h(row.get("node", "")), h(account), h(container),
+                status_class(status), h(status),
+                h(fmt_int(row.get("new_backlog_rows", 0))),
+                h(fmt_int(row.get("retry_backlog_rows", 0))),
+                h(fmt_int(row.get("sync_point1", 0))),
+                h(fmt_int(row.get("sync_point2", 0))),
+                h(fmt_int(row.get("max_row", 0))),
+                h(age_text(row.get("last_update_timestamp", 0))),
+                h(row.get("last_reason", "")), h(logs_url)))
+        status_body = "\n".join(status_rows)
+    else:
+        status_body = '<tr><td colspan="12" class="empty">No matching container recon data</td></tr>'
+
+    event_rows = []
+    for hit in object_result.get("hits", []):
+        event_rows.append('''
+          <tr>
+            <td>%s</td>
+            <td>%s</td>
+            <td>%s</td>
+            <td><span class="pill %s">%s</span></td>
+            <td>%s</td>
+            <td>%s</td>
+            <td class="num">%s</td>
+            <td class="mono">%s</td>
+          </tr>''' % (
+            h(hit.get("timestamp", "")), h(hit.get("host", "")),
+            h(hit.get("site", "")), status_class(hit.get("outcome", "")),
+            h(hit.get("outcome", "")), h(hit.get("method", "")),
+            h(hit.get("reason", "")), h(ms_text(hit.get("duration_ms", 0))),
+            h(hit.get("object", ""))))
+    if event_rows:
+        events_body = "\n".join(event_rows)
+    else:
+        events_body = '<tr><td colspan="8" class="empty">Enter account/container/object filters to show object history</td></tr>'
+
+    error_text = ", ".join(str(err) for err in object_result.get("errors", []))
+    if not error_text and (account_filter or container_filter or object_filter) and not object_result.get("enabled"):
+        error_text = "quickwit_search_url_not_configured"
+    full_logs_url = "/logs?" + urlencode({
+        "account": account_filter,
+        "container": container_filter,
+        "object": object_filter,
+        "max_hits": max_hits or "20",
+    })
+
+    return '''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Container Sync Status</title>
+  <style>
+    :root { color-scheme: light; --bg: #f6f8fb; --ink: #172033; --muted: #667085; --line: #d8dee8; --panel: #ffffff; --ok: #087443; --bad: #b42318; --warn: #b54708; --blue: #155eef; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    header { padding: 24px 32px 18px; border-bottom: 1px solid var(--line); background: #fff; display: flex; justify-content: space-between; align-items: end; gap: 16px; }
+    h1 { margin: 0; font-size: 28px; font-weight: 720; letter-spacing: 0; }
+    nav { display: flex; gap: 14px; flex-wrap: wrap; }
+    nav { display: flex; gap: 14px; flex-wrap: wrap; }
+    nav a { color: var(--blue); text-decoration: none; font-weight: 650; font-size: 14px; }
+    nav a.active { color: var(--ink); }
+    nav a.active { color: var(--ink); }
+    main { padding: 24px 32px 36px; max-width: 1680px; margin: 0 auto; }
+    .panel, .table-wrap, .summary-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+    .panel { padding: 16px; margin-bottom: 16px; }
+    .summary { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .summary-card { padding: 16px; }
+    .summary-card span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .summary-card strong { display: block; margin-top: 8px; font-size: 28px; line-height: 1; }
+    form { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); gap: 12px; align-items: end; }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 650; }
+    input, button { height: 36px; border: 1px solid var(--line); border-radius: 6px; padding: 0 10px; font: inherit; background: #fff; color: var(--ink); }
+    button { background: var(--blue); color: #fff; border-color: var(--blue); font-weight: 700; cursor: pointer; }
+    .meta { margin-top: 12px; color: var(--muted); font-size: 13px; display: flex; gap: 16px; flex-wrap: wrap; }
+    .error { color: var(--bad); font-weight: 650; }
+    .table-wrap { overflow: auto; margin-bottom: 16px; }
+    table { width: 100%%; border-collapse: collapse; min-width: 1120px; }
+    th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; vertical-align: middle; }
+    th { position: sticky; top: 0; background: #fbfcfe; color: #475467; font-weight: 680; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+    .pill { display: inline-flex; align-items: center; height: 24px; padding: 0 9px; border-radius: 999px; font-weight: 680; font-size: 12px; }
+    .pill.ok { color: var(--ok); background: #dcfae6; }
+    .pill.bad { color: var(--bad); background: #fee4e2; }
+    .pill.warn { color: var(--warn); background: #fef0c7; }
+    .pill.muted { color: var(--muted); background: #eef2f6; }
+    .empty { text-align: center; color: var(--muted); padding: 28px; }
+    @media (max-width: 980px) { header, main { padding-left: 16px; padding-right: 16px; } form, .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>Container Sync Status</h1></div>
+    <nav>%s</nav>
+  </header>
+  <main>
+    <section class="panel">
+      <form method="get" action="/containers">
+        <label>Account<input name="account" value="%s" placeholder="AUTH_test"></label>
+        <label>Container<input name="container" value="%s" placeholder="src-001"></label>
+        <label>Object<input name="object" value="%s" placeholder="optional object name"></label>
+        <label>Log hits<input name="max_hits" type="number" min="1" max="200" value="%s"></label>
+        <button type="submit">Search</button>
+      </form>
+      <div class="meta">
+        <span>containers: <strong>%s</strong></span>
+        <span>object query: <strong>%s</strong></span>
+        <span>object hits: <strong>%s</strong></span>
+        %s
+      </div>
+    </section>
+    <section class="summary">
+      <div class="summary-card"><span>Matching containers</span><strong>%s</strong></div>
+      <div class="summary-card"><span>New backlog rows</span><strong>%s</strong></div>
+      <div class="summary-card"><span>Retry backlog rows</span><strong>%s</strong></div>
+      <div class="summary-card"><span>Failed containers</span><strong>%s</strong></div>
+    </section>
+    <section class="table-wrap">
+      <table>
+        <thead><tr><th>Node</th><th>Account</th><th>Container</th><th>Status</th><th>New backlog</th><th>Retry backlog</th><th>SP1</th><th>SP2</th><th>Max row</th><th>Updated</th><th>Reason</th><th>History</th></tr></thead>
+        <tbody>%s</tbody>
+      </table>
+    </section>
+    <section class="table-wrap">
+      <table>
+        <thead><tr><th>Timestamp</th><th>Host</th><th>Site</th><th>Outcome</th><th>Method</th><th>Reason</th><th>Duration ms</th><th>Object</th></tr></thead>
+        <tbody>%s</tbody>
+      </table>
+    </section>
+    <div class="meta"><a href="%s">Open full object history search</a></div>
+  </main>
+</body>
+</html>''' % (
+        nav_html("containers"), h(account_filter), h(container_filter),
+        h(object_filter), h(max_hits or "20"), h(len(rows)),
+        h(object_result.get("query", "")), h(object_result.get("num_hits", 0)),
+        '<span class="error">%s</span>' % h(error_text) if error_text else '',
+        h(len(rows)), h(fmt_int(total_new_backlog)), h(fmt_int(total_retry_backlog)),
+        h(fmt_int(failures)), status_body, events_body, h(full_logs_url))
+
+
 def render_object_logs(params):
     result = quickwit_search(params)
     fields = ["q", "account", "container", "object", "method", "outcome",
@@ -525,7 +755,7 @@ def render_object_logs(params):
 <body>
   <header>
     <div><h1>Container Sync Object Logs</h1></div>
-    <nav><a href="/">Recon</a></nav>
+    <nav>%s</nav>
   </header>
   <main>
     <section class="panel">
@@ -559,7 +789,7 @@ def render_object_logs(params):
   </main>
 </body>
 </html>''' % (
-        h(values["q"]), h(values["account"]), h(values["container"]),
+        nav_html("logs"), h(values["q"]), h(values["account"]), h(values["container"]),
         h(values["object"]), option_html(["GET", "HEAD", "PUT", "DELETE"], values["method"]),
         option_html(["success", "failure", "skipped"], values["outcome"]),
         h(values["reason"]), h(values["host"]), h(values["site"]),
@@ -570,7 +800,7 @@ def render_object_logs(params):
     return body
 
 
-def collect_web_rows(states):
+def collect_web_rows(states, limit=True):
     rows = []
     for state in states:
         if not state["up"]:
@@ -586,7 +816,7 @@ def collect_web_rows(states):
     rows.sort(key=lambda item: (
         number(item.get("new_backlog_rows")) + number(item.get("retry_backlog_rows")),
         number(item.get("last_update_timestamp"))), reverse=True)
-    return rows[:MAX_WEB_CONTAINERS]
+    return rows[:MAX_WEB_CONTAINERS] if limit else rows
 
 
 def status_class(status):
@@ -687,6 +917,9 @@ def render_html():
     header { padding: 28px 32px 18px; border-bottom: 1px solid var(--line); background: #fff; }
     h1 { margin: 0; font-size: 28px; font-weight: 720; letter-spacing: 0; }
     .sub { margin-top: 6px; color: var(--muted); font-size: 14px; }
+    nav { margin-top: 12px; display: flex; gap: 14px; flex-wrap: wrap; }
+    nav a { color: var(--blue); text-decoration: none; font-weight: 650; font-size: 14px; }
+    nav a.active { color: var(--ink); }
     main { padding: 24px 32px 36px; max-width: 1600px; margin: 0 auto; }
     .summary { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
     .summary-card, .node-card, .table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
@@ -724,6 +957,7 @@ def render_html():
   <header>
     <h1>Container Sync Recon</h1>
     <div class="sub">Auto refresh: %ss.</div>
+    <nav>%s</nav>
   </header>
   <main>
     <section class="summary">
@@ -741,12 +975,13 @@ def render_html():
         <tbody>%s</tbody>
       </table>
     </section>
-    <footer>/metrics exposes the same recon values for Prometheus. /api/state returns raw parsed state. <a href="/logs">Object log search</a></footer>
+    <footer>/metrics exposes the same recon values for Prometheus. /api/state returns raw parsed state. Use <a href="/containers">Container Status</a> for account/container lookup and <a href="/logs">Object History</a> for object log search.</footer>
   </main>
 </body>
 </html>''' % (
         WEB_REFRESH_SECONDS,
         WEB_REFRESH_SECONDS,
+        nav_html("overview"),
         nodes_up,
         len(states),
         fmt_int(total_new_backlog),
@@ -774,6 +1009,10 @@ class Handler(BaseHTTPRequestHandler):
             params = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
             self.write_response(200, "text/html; charset=utf-8",
                                 render_object_logs(params).encode("utf-8"))
+        elif path in ("/containers", "/container-status"):
+            params = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            self.write_response(200, "text/html; charset=utf-8",
+                                render_container_status(params).encode("utf-8"))
         elif path in ("/", "/status"):
             self.write_response(200, "text/html; charset=utf-8",
                                 render_html().encode("utf-8"))

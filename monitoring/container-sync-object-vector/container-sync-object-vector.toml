@@ -35,6 +35,13 @@ del(.sync_to)
 .start_timestamp = if exists(.start_timestamp) { parse_timestamp!(.start_timestamp, "%+") } else { .timestamp }
 .end_timestamp = if exists(.end_timestamp) { parse_timestamp!(.end_timestamp, "%+") } else { .timestamp }
 
+account = to_string(.account) ?? ""
+container = to_string(.container) ?? ""
+object_name = to_string(.object) ?? ""
+remote_container_path = to_string(.remote_container_path) ?? ""
+
+.source_path = if exists(.source_path) && .source_path != "" { .source_path } else { "/v1/" + account + "/" + container + "/" + object_name }
+.remote_path = if exists(.remote_path) && .remote_path != "" { .remote_path } else if remote_container_path != "" { remote_container_path + "/" + object_name } else { "" }
 .path = if exists(.path) && .path != "" { .path } else { .remote_path }
 .client_ip = "0.0.0.0"
 .remote_addr = "0.0.0.0"
@@ -43,13 +50,13 @@ del(.sync_to)
 .user_agent = ""
 
 .status = to_int(.status) ?? 0
-.status_text = if exists(.status_text) && .status_text != "" { .status_text } else { "unknown" }
-.status_class = if exists(.status_class) && .status_class != "" { .status_class } else { "unknown" }
+.status_text = if exists(.status_text) && .status_text != "" { .status_text } else if .status > 0 { to_string(.status) } else { "unknown" }
+.status_class = if exists(.status_class) && .status_class != "" { .status_class } else if .status >= 200 && .status < 300 { "2xx" } else if .status >= 300 && .status < 400 { "3xx" } else if .status >= 400 && .status < 500 { "4xx" } else if .status >= 500 && .status < 600 { "5xx" } else { "unknown" }
 .bytes = to_int(.bytes) ?? 0
 .bytes_sent = to_int(.bytes_sent) ?? .bytes
 .object_bytes = to_int(.object_bytes) ?? 0
 .request_time = to_float(.request_time) ?? 0.0
-.duration_ms = to_float(.duration_ms) ?? 0.0
+.duration_ms = to_float(.duration_ms) ?? (.request_time * 1000.0)
 .row_id = to_int(.row_id) ?? 0
 .deleted = to_int(.deleted) ?? 0
 .storage_policy_index = to_int(.storage_policy_index) ?? 0
