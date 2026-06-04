@@ -330,8 +330,7 @@ use = egg:swift#backend_ratelimit
 # request_tries = 3
 #
 # Number of parallel container_sync_row operations per container for
-# new rows; higher values overlap remote I/O but use more network
-# bandwidth.
+# new rows
 # sync_row_concurrency = 8
 #
 # Internal client config file path
