@@ -10,7 +10,6 @@ Environment=RECON_URLS=http://127.0.0.1:6201/recon/container-sync
 Environment=RECON_PATHS=
 Environment=REQUEST_TIMEOUT_SECONDS=5
 Environment=WEB_REFRESH_SECONDS=15
-Environment=MAX_WEB_CONTAINERS=200
 WorkingDirectory=/opt/container-sync-recon-exporter
 ExecStart=/usr/bin/python3 /opt/container-sync-recon-exporter/container_sync_recon_exporter.py
 Restart=always

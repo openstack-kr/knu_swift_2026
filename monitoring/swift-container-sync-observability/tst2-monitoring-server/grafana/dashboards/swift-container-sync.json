@@ -21,12 +21,6 @@
   "id": null,
   "links": [
     {
-      "title": "Container Status Web",
-      "url": "http://127.0.0.1:8010/containers",
-      "targetBlank": true,
-      "type": "link"
-    },
-    {
       "title": "Object History Web",
       "url": "http://127.0.0.1:8010/logs",
       "targetBlank": true,
@@ -203,7 +197,7 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "sum(swift_container_sync_recon_container_new_backlog_rows) or on() vector(0)",
+          "expr": "sum(swift_container_sync_recon_daemon_new_backlog_rows) or on() vector(0)",
           "legendFormat": "new rows waiting",
           "range": false,
           "instant": true
@@ -262,7 +256,7 @@
         },
         "overrides": []
       },
-      "description": "Rows newer than sync_point1 waiting to be processed."
+      "description": "New container-sync rows waiting to be processed."
     },
     {
       "id": 4,
@@ -285,7 +279,7 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "sum(swift_container_sync_recon_container_retry_backlog_rows) or on() vector(0)",
+          "expr": "sum(swift_container_sync_recon_daemon_retry_backlog_rows) or on() vector(0)",
           "legendFormat": "retry rows waiting",
           "range": false,
           "instant": true
@@ -344,7 +338,7 @@
         },
         "overrides": []
       },
-      "description": "Rows between sync_point2 and sync_point1 waiting for the retry/safety pass."
+      "description": "Rows waiting for the retry pass."
     },
     {
       "id": 5,
@@ -518,7 +512,7 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "sum by (node) (swift_container_sync_recon_container_new_backlog_rows)",
+          "expr": "sum by (node) (swift_container_sync_recon_daemon_new_backlog_rows)",
           "legendFormat": "new rows - {{node}}",
           "range": true,
           "instant": false
@@ -529,7 +523,7 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "sum by (node) (swift_container_sync_recon_container_retry_backlog_rows)",
+          "expr": "sum by (node) (swift_container_sync_recon_daemon_retry_backlog_rows)",
           "legendFormat": "retry rows - {{node}}",
           "range": true,
           "instant": false
@@ -1492,7 +1486,7 @@
     },
     {
       "id": 15,
-      "title": "Containers With Most Waiting Rows",
+      "title": "Largest Waiting Rows by Node",
       "type": "table",
       "datasource": {
         "type": "prometheus",
@@ -1511,8 +1505,8 @@
             "type": "prometheus",
             "uid": "swift_prometheus"
           },
-          "expr": "topk(20, swift_container_sync_recon_container_new_backlog_rows + swift_container_sync_recon_container_retry_backlog_rows)",
-          "legendFormat": "{{node}} {{account}}/{{container}}",
+          "expr": "topk(20, swift_container_sync_recon_daemon_max_new_backlog_rows + swift_container_sync_recon_daemon_max_retry_backlog_rows)",
+          "legendFormat": "{{node}}",
           "range": false,
           "instant": true
         }
@@ -1551,7 +1545,7 @@
         "overrides": []
       },
       "transformations": [],
-      "description": "Top containers by combined new and retry waiting rows."
+      "description": "Largest single-container waiting-row backlog observed by each node during the latest run."
     }
   ],
   "refresh": "15s",

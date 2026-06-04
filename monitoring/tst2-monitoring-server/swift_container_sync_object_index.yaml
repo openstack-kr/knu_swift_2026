@@ -12,20 +12,6 @@ doc_mapping:
       fast: true
       fast_precision: seconds
 
-    - name: start_timestamp
-      type: datetime
-      input_formats:
-        - rfc3339
-      fast: true
-      fast_precision: seconds
-
-    - name: end_timestamp
-      type: datetime
-      input_formats:
-        - rfc3339
-      fast: true
-      fast_precision: seconds
-
     - name: site
       type: text
       tokenizer: raw
@@ -135,21 +121,8 @@ doc_mapping:
       type: f64
       fast: true
 
-    - name: row_id
-      type: u64
-      fast: true
-
     - name: deleted
       type: u64
-      fast: true
-
-    - name: storage_policy_index
-      type: u64
-      fast: true
-
-    - name: created_at
-      type: text
-      tokenizer: raw
       fast: true
 
     - name: transaction_id

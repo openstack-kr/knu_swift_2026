@@ -32,8 +32,6 @@ del(.sync_to)
 .log_type = "container_sync_object"
 
 .timestamp = if exists(.timestamp) { parse_timestamp!(.timestamp, "%+") } else { parse_timestamp!(parsed.swift_ts, "%+") }
-.start_timestamp = if exists(.start_timestamp) { parse_timestamp!(.start_timestamp, "%+") } else { .timestamp }
-.end_timestamp = if exists(.end_timestamp) { parse_timestamp!(.end_timestamp, "%+") } else { .timestamp }
 
 account = to_string(.account) ?? ""
 container = to_string(.container) ?? ""
@@ -57,9 +55,7 @@ remote_container_path = to_string(.remote_container_path) ?? ""
 .object_bytes = to_int(.object_bytes) ?? 0
 .request_time = to_float(.request_time) ?? 0.0
 .duration_ms = to_float(.duration_ms) ?? (.request_time * 1000.0)
-.row_id = to_int(.row_id) ?? 0
 .deleted = to_int(.deleted) ?? 0
-.storage_policy_index = to_int(.storage_policy_index) ?? 0
 .error_code = if .outcome == "failure" { .status } else { 0 }
 '''
 
