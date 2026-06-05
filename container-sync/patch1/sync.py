@@ -428,6 +428,12 @@ class ContainerSync(Daemon):
                             if not rows:
                                 break
                             row = rows[0]
+                            # This node will only initially sync out one third
+                            # of the objects (if 3 replicas, 1/4 if 4, etc.).
+                            # It'll come back around to the section above
+                            # and attempt to sync previously skipped rows in
+                            # case the other nodes didn't succeed or in case
+                            # it failed to do so the first time.
                             if unpack_from('>I', hash_path(
                                     info['account'], info['container'],
                                     row['name'], raw_digest=True))[0] \
