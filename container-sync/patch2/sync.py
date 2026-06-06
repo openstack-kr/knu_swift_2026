@@ -402,7 +402,6 @@ class ContainerSync(Daemon):
     def _store_retry_slot(self, info, owner_index, retry_slot):
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container'], None),)
-            hash_path(info['account'], info['container'], None),)
         if self.retry_memcache:
             self.retry_memcache.set(
                 '%s/%s' % (retry_cache_prefix, owner_index),
