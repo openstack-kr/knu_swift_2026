@@ -210,3 +210,6 @@ monitoring/tst2-monitoring-server/.env
 monitoring/tst2-monitoring-server/prometheus.yml
 *.pem
 .ssh/
+# Local container-sync working copies
+/container-sync/backend.py
+/container-sync/sync.py
