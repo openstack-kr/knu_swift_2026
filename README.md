@@ -1,9 +1,12 @@
 # knu_swift_2026
 
 OpenStack Swift 의 Container Sync 성능 및 사용성 개선을 위해 진행한
-프로젝트입니다. Swift 는 대규모 오브젝트 스토리지를 위한 분산 시스템이며,
+프로젝트입니다.<br>
+Swift 는 대규모 오브젝트 스토리지를 위한 분산 시스템이며,<br>
 본 프로젝트는 container sync에서
 발생하는 병목을 코드 패치와 운영 도구 두 갈래로 다룹니다.
+
+원본 코드 저장소: <https://opendev.org/openstack/swift/>
 
 ## 배경
 
@@ -17,6 +20,6 @@ OpenStack Swift 의 Container Sync 성능 및 사용성 개선을 위해 진행�
 
 ## 팀원
 
-- Oh Jiwoo
-- Lee Juyeong
-- Hwang Jiyoung
+- [Hwang Jiyoung](https://github.com/imjyong) - Project Lead
+- [Oh Jiwoo](https://github.com/5hjiwoo)
+- [Lee Juyeong](https://github.com/ale8ander) 
