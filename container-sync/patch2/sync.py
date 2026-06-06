@@ -402,6 +402,7 @@ class ContainerSync(Daemon):
     def _store_retry_slot(self, info, owner_index, retry_slot):
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container'], None),)
+            hash_path(info['account'], info['container'], None),)
         if self.retry_memcache:
             self.retry_memcache.set(
                 '%s/%s' % (retry_cache_prefix, owner_index),
@@ -512,6 +513,7 @@ class ContainerSync(Daemon):
             else:
                 return
 
+
             if broker.metadata.get(SYSMETA_VERSIONS_CONT):
                 self.container_skips += 1
                 self.logger.increment('skips')
@@ -544,6 +546,7 @@ class ContainerSync(Daemon):
                     self.logger.increment('failures')
                     return
                 start_at = time()
+                self.run_id = int(start_at) // 60
                 stop_at = start_at + self.container_time
                 next_sync_point = None
                 sync_stage_time = start_at
@@ -859,9 +862,11 @@ class ContainerSync(Daemon):
         return choice(self.http_proxies) if self.http_proxies else None
 
 
+
 def main():
     conf_file, options = parse_options(once=True)
     run_daemon(ContainerSync, conf_file, **options)
+
 
 
 if __name__ == '__main__':
