@@ -156,8 +156,6 @@ class ContainerSync(Daemon):
         #: to the next one. If a container sync hasn't finished in this time,
         #: it'll just be resumed next scan.
         self.container_time = int(conf.get('container_time', 60))
-        #: rotation advance lock에 쓰이는 per-run id. 실제 sync 시작 시각에서 갱신된다.
-        self.run_id = None
         #: ContainerSyncCluster instance for validating sync-to values.
         self.realms_conf = ContainerSyncRealms(
             os.path.join(
@@ -557,8 +555,7 @@ class ContainerSync(Daemon):
                 row for row, is_owned in rows_with_owner if is_owned]
 
             # 3. Sync: owner 몫인 row는 병렬로 작업을 던져서 처리
-            pool_size = min(self.sync_row_concurrency, len(owned_rows))
-            with ContextPool(pool_size) as pool:
+            with ContextPool(self.sync_row_concurrency) as pool:
                 row_sync_waiters = [
                     pool.spawn(
                         self.container_sync_row, row, sync_to, user_key,
@@ -615,13 +612,15 @@ class ContainerSync(Daemon):
         if not self.retry_memcache:
             return sync_point2, retry_state
 
-        # 3. Lock For Rotation: rotation 증가는 한 sync당 한 노드만 하도록 lock으로 막는다
+        # 3. Lock For Rotation: rotation 증가는 retry window마다 한 노드만
+        # 하도록 lock으로 막는다.
         retry_cache_prefix = 'container-sync/slot/%s' % (
             hash_path(info['account'], info['container'], None),)
-        lock_key = '%s/rotation-lock/%s/%s' % (
-            retry_cache_prefix, target_sync_point1, self.run_id)
-        # 같은 sync 안에서만 lock이 살아 있으면 되므로 container_time에 맞춘다
-        lock_ttl = max(self.container_time, 1)
+        lock_key = '%s/rotation-lock/%s' % (
+            retry_cache_prefix, target_sync_point1)
+        # run_forever의 시작 jitter까지 고려해 같은 retry window의 replica들이
+        # 같은 lock key를 보도록 interval과 container_time 중 큰 값으로 둔다.
+        lock_ttl = max(self.interval, self.container_time)
         lock_value = self.retry_memcache.incr(lock_key, time=lock_ttl)
         if lock_value != 1:
             return sync_point2, retry_state
@@ -744,7 +743,6 @@ class ContainerSync(Daemon):
                         max_row=broker.get_max_row())
                     return
                 start_at = time()
-                self.run_id = int(start_at) // 60
                 stop_at = start_at + self.container_time
                 next_sync_point = None
                 sync_stage_time = start_at
@@ -796,7 +794,6 @@ class ContainerSync(Daemon):
                     sync_stage_time = time()
 
                     # Phase 2 (sync_point1 <= new row)
-                    submitted_row_syncs = collections.deque()
                     with ContextPool(self.sync_row_concurrency) as pool:
                         while sync_stage_time < stop_at:
                             rows = broker.get_items_since(sync_point1, 1)
@@ -811,19 +808,10 @@ class ContainerSync(Daemon):
                                         info['account'], info['container'],
                                         row['name'], raw_digest=True)
                             )[0] % len(nodes) == ordinal:
-                                # 2. Sync: 작업은 비동기로 던져 두고,
-                                # 결과 회수는 아래 wait에서 한 번에 몰아서 한다
-                                submitted_row_syncs.append((row, pool.spawn(
+                                # 2. Sync: 작업은 pool에 맡기고 waitall에서 회수한다
+                                pool.spawn(
                                     self.container_sync_row, row, sync_to,
-                                    user_key, broker, info, realm,
-                                    realm_key)))
-                                if len(submitted_row_syncs) >= \
-                                        self.sync_row_concurrency:
-                                    # 3. Wait: sliding window 크기를 넘기지
-                                    # 않도록 가장 먼저 던진 작업 하나를 기다림 (wait oldest)
-                                    _, row_sync_waiter = \
-                                        submitted_row_syncs.popleft()
-                                    row_sync_waiter.wait()
+                                    user_key, broker, info, realm, realm_key)
                             # 4. Advance: owner가 아니어도 새 row 영역은 모두
                             # 지나갔다는 뜻이므로 sync_point1은 현재 row까지 전진
                             sync_point1 = row['ROWID']
@@ -833,10 +821,7 @@ class ContainerSync(Daemon):
                                 sync_point1, None)
                             sync_stage_time = time()
 
-                        while submitted_row_syncs:
-                            _, row_sync_waiter = \
-                                submitted_row_syncs.popleft()
-                            row_sync_waiter.wait()
+                        pool.waitall()
                     sync_stage_time = time()
                     self.container_syncs += 1
                     self.logger.increment('syncs')
