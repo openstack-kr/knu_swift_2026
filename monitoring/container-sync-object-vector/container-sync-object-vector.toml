@@ -9,7 +9,7 @@ read_from = "end"
 type = "remap"
 inputs = ["container_sync_log"]
 source = '''
-parsed, err = parse_regex(.message, r'^(?P<swift_ts>\S+)\s+(?P<swift_host>\S+)\s+(?P<swift_program>[^:]+):\s+.*container-sync-object-event (?P<event>\{.*\})$')
+parsed, err = parse_regex(.message, r'^(?P<swift_ts>\S+)\s+(?P<swift_host>\S+)\s+(?P<swift_program>[^:]+):\s+.*container-sync-(?:object|container)-event (?P<event>\{.*\})$')
 if err != null {
   abort
 }
@@ -28,8 +28,8 @@ del(.sync_to)
 .site = get_env_var("VECTOR_SITE") ?? "unknown"
 .host = if exists(.host) && .host != "" { .host } else { parsed.swift_host }
 .program = if exists(.program) && .program != "" { .program } else { parsed.swift_program }
-.event_type = "container_sync_object"
-.log_type = "container_sync_object"
+.event_type = if exists(.event_type) && .event_type != "" { .event_type } else { "container_sync_object" }
+.log_type = .event_type
 
 .timestamp = if exists(.timestamp) { parse_timestamp!(.timestamp, "%+") } else { parse_timestamp!(parsed.swift_ts, "%+") }
 

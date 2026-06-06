@@ -207,6 +207,7 @@ class ContainerSync(Daemon):
         self.recon_last_flush = 0
         self.recon_hostname = socket.gethostname()
         self.recon_totals = collections.defaultdict(int)
+        self.recon_containers = {}
         self.recon_scan = {
             'mode': 'init',
             'last_run_timestamp': 0,
@@ -332,7 +333,7 @@ class ContainerSync(Daemon):
         self.container_failures = 0
 
     def container_report(self, start, end, sync_point1, sync_point2, info,
-                         max_row):
+                         max_row, outcome='success', time_exhausted=False):
         self.logger.info('Container sync report: %(container)s, '
                          'time window start: %(start)s, '
                          'time window end: %(end)s, '
@@ -354,6 +355,34 @@ class ContainerSync(Daemon):
                           'point1': sync_point1,
                           'point2': sync_point2,
                           'total': max_row})
+        max_row = max(0, int(max_row or 0))
+        sync_point2 = max(0, int(sync_point2 or 0))
+        object_count = max(0, int(info.get('object_count') or 0))
+        replication_rate = 1.0 if not max_row else min(
+            1.0, float(sync_point2) / float(max_row))
+        timestamp = datetime.fromtimestamp(
+            end, timezone.utc).isoformat().replace('+00:00', 'Z')
+        event = {
+            'event_type': 'container_sync_container',
+            'timestamp': timestamp,
+            'host': self.recon_hostname,
+            'program': self.log_route,
+            'account': info.get('account', ''),
+            'container': info.get('container', ''),
+            'outcome': outcome,
+            'sync_point1': max(0, int(sync_point1 or 0)),
+            'sync_point2': sync_point2,
+            'max_row': max_row,
+            'object_count': object_count,
+            'replication_rate': replication_rate,
+            'puts': max(0, int(self.container_stats['puts'] or 0)),
+            'deletes': max(0, int(self.container_stats['deletes'] or 0)),
+            'bytes': max(0, int(self.container_stats['bytes'] or 0)),
+            'request_time': max(0, end - start),
+            'time_exhausted': 1 if time_exhausted else 0,
+        }
+        self.logger.info('container-sync-container-event %s',
+                         json.dumps(event, sort_keys=True))
 
     def _recon_begin_scan(self, mode):
         now = time()
@@ -419,19 +448,25 @@ class ContainerSync(Daemon):
         if time_exhausted:
             self.recon_scan['time_exhausted_containers'] += 1
 
+        account = info.get('account', '')
+        container = info.get('container', '')
+        key = '%s/%s' % (account, container)
+        self.recon_containers[key] = {
+            'account': account,
+            'container': container,
+            'status': status,
+            'last_status': status,
+            'last_reason': status,
+            'updated': time(),
+            'sync_point1': max(0, sync_point1),
+            'sync_point2': max(0, sync_point2),
+            'max_row': max_row,
+            'object_count': max(0, int(info.get('object_count') or 0)),
+            'new_backlog_rows': new_backlog_rows,
+            'retry_backlog_rows': retry_backlog_rows,
+            'time_exhausted': 1 if time_exhausted else 0,
+        }
         self._recon_flush()
-
-    def _recon_stats(self):
-        stats = dict(self.recon_totals)
-        stats.update({
-            'attempted': self.recon_scan.get('scanned_containers', 0),
-            'success': self.recon_scan.get('synced_containers', 0),
-            'failure': self.recon_scan.get('failed_containers', 0),
-            'skipped': self.recon_scan.get('skipped_containers', 0),
-            'time_exhausted': self.recon_scan.get(
-                'time_exhausted_containers', 0),
-        })
-        return stats
 
     def _recon_flush(self, force=False):
         if not self.recon_enabled:
@@ -442,13 +477,22 @@ class ContainerSync(Daemon):
 
         last_run = (self.recon_scan.get('last_run_finished_timestamp') or
                     self.recon_scan.get('last_run_timestamp') or now)
+        stats = dict(self.recon_totals)
+        stats.update({
+            'attempted': self.recon_scan.get('scanned_containers', 0),
+            'success': self.recon_scan.get('synced_containers', 0),
+            'failure': self.recon_scan.get('failed_containers', 0),
+            'skipped': self.recon_scan.get('skipped_containers', 0),
+            'time_exhausted': self.recon_scan.get(
+                'time_exhausted_containers', 0),
+        })
         cache_update = {
             'container_sync_time': self.recon_scan.get(
                 'last_run_duration_seconds', 0),
             'container_sync_last': last_run,
-            'container_sync_stats': self._recon_stats(),
+            'container_sync_stats': stats,
             'container_sync_daemon': dict(self.recon_scan),
-            'container_sync_containers': {},
+            'container_sync_containers': dict(self.recon_containers),
             'container_sync_hostname': self.recon_hostname,
         }
 
@@ -799,10 +843,11 @@ class ContainerSync(Daemon):
                     sync_completed = True
                 finally:
                     max_row = broker.get_max_row()
-                    self.container_report(start_at, sync_stage_time,
-                                          sync_point1,
-                                          next_sync_point,
-                                          info, max_row)
+                    self.container_report(
+                        start_at, sync_stage_time, sync_point1,
+                        next_sync_point, info, max_row,
+                        outcome='success' if sync_completed else 'failure',
+                        time_exhausted=sync_stage_time >= stop_at)
                     if sync_completed:
                         self._recon_record_container(
                             info, 'success', sync_point1=sync_point1,
@@ -830,10 +875,6 @@ class ContainerSync(Daemon):
             self.logger.exception('ERROR Syncing %s',
                                   broker if broker else path)
 
-    def _event_timestamp(self, timestamp):
-        return datetime.fromtimestamp(
-            timestamp, timezone.utc).isoformat().replace('+00:00', 'Z')
-
     def _log_object_sync_event(self, row, info, sync_to, method, outcome,
                                start_time, end_time=None, http_status=0,
                                reason='', bytes_transferred=0):
@@ -847,10 +888,12 @@ class ContainerSync(Daemon):
         request_time = max(0, end_time - start_time)
         bytes_transferred = max(0, int(bytes_transferred or 0))
         object_bytes = max(0, int(row.get('size') or 0))
+        timestamp = datetime.fromtimestamp(
+            end_time, timezone.utc).isoformat().replace('+00:00', 'Z')
 
         event = {
             'event_type': 'container_sync_object',
-            'timestamp': self._event_timestamp(end_time),
+            'timestamp': timestamp,
             'host': self.recon_hostname,
             'program': self.log_route,
             'account': account,

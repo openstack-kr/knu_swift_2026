@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=EXPORTER_PORT=8010
-Environment=RECON_URLS=http://127.0.0.1:6201/recon/container-sync
+Environment=EXPORTER_PORT=8010 #환경 파일 읽기
+Environment=RECON_URLS=http://127.0.0.1:6201/recon/container-sync #Vector를 해당 cofig로 실행
 Environment=RECON_PATHS=
 Environment=REQUEST_TIMEOUT_SECONDS=5
 Environment=WEB_REFRESH_SECONDS=15

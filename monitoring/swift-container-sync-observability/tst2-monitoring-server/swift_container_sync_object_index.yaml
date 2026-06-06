@@ -125,6 +125,39 @@ doc_mapping:
       type: u64
       fast: true
 
+
+    - name: sync_point1
+      type: u64
+      fast: true
+
+    - name: sync_point2
+      type: u64
+      fast: true
+
+    - name: max_row
+      type: u64
+      fast: true
+
+    - name: object_count
+      type: u64
+      fast: true
+
+    - name: replication_rate
+      type: f64
+      fast: true
+
+    - name: puts
+      type: u64
+      fast: true
+
+    - name: deletes
+      type: u64
+      fast: true
+
+    - name: time_exhausted
+      type: u64
+      fast: true
+
     - name: transaction_id
       type: text
       tokenizer: raw
