@@ -1,0 +1,86 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: swift-prometheus
+    ports:
+      - "9091:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - quickwit-swift
+
+  sync-lag-exporter:
+    image: python:3.12-slim
+    container_name: swift-sync-lag-exporter
+    command: python /app/sync_lag_exporter.py
+    environment:
+      SOURCE_SWIFT_URL: ${SOURCE_SWIFT_URL:-}
+      REPLICA_SWIFT_URL: ${REPLICA_SWIFT_URL:-}
+      SOURCE_AUTH_URL: ${SOURCE_AUTH_URL:-}
+      REPLICA_AUTH_URL: ${REPLICA_AUTH_URL:-}
+      SOURCE_AUTH_USER: ${SOURCE_AUTH_USER:-}
+      REPLICA_AUTH_USER: ${REPLICA_AUTH_USER:-}
+      SOURCE_AUTH_KEY: ${SOURCE_AUTH_KEY:-}
+      REPLICA_AUTH_KEY: ${REPLICA_AUTH_KEY:-}
+      SOURCE_AUTH_TOKEN: ${SOURCE_AUTH_TOKEN:-}
+      REPLICA_AUTH_TOKEN: ${REPLICA_AUTH_TOKEN:-}
+      SYNC_CONTAINERS: ${SYNC_CONTAINERS:-}
+      DISCOVER_SYNC_CONTAINERS: ${DISCOVER_SYNC_CONTAINERS:-true}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-10}
+    volumes:
+      - ./sync-lag-exporter:/app:ro
+    networks:
+      - quickwit-swift
+
+  container-sync-recon-exporter:
+    image: python:3.12-slim
+    container_name: swift-container-sync-recon-exporter
+    command: python /app/container_sync_recon_exporter.py
+    ports:
+      - "${CONTAINER_SYNC_RECON_WEB_PORT:-8010}:8010"
+    environment:
+      EXPORTER_PORT: 8010
+      RECON_URLS: ${CONTAINER_SYNC_RECON_URLS:-}
+      RECON_PATHS: ${CONTAINER_SYNC_RECON_PATHS:-}
+      RECON_NODE_ALIASES: ${CONTAINER_SYNC_RECON_NODE_ALIASES:-}
+      REQUEST_TIMEOUT_SECONDS: ${CONTAINER_SYNC_RECON_REQUEST_TIMEOUT_SECONDS:-5}
+      WEB_REFRESH_SECONDS: ${CONTAINER_SYNC_RECON_WEB_REFRESH_SECONDS:-15}
+      QUICKWIT_SEARCH_URL: ${CONTAINER_SYNC_OBJECT_QUICKWIT_SEARCH_URL:-http://quickwit:7280/api/v1/swift-container-sync-objects/search}
+      QUICKWIT_DEFAULT_MAX_HITS: ${CONTAINER_SYNC_OBJECT_QUICKWIT_DEFAULT_MAX_HITS:-50}
+    volumes:
+      - ./container-sync-recon-exporter:/app:ro
+    networks:
+      - quickwit-swift
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: swift-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: https://github.com/quickwit-oss/quickwit-datasource/releases/download/v0.5.0/quickwit-quickwit-datasource-0.5.0.zip;quickwit-quickwit-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - quickwit-swift
+    depends_on:
+      - prometheus
+
+volumes:
+  grafana-data:
+  prometheus-data:
+
+networks:
+  quickwit-swift:
+    external: true
+    name: quickwit-swift_default

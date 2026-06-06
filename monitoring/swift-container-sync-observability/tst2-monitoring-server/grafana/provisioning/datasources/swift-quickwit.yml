@@ -1,0 +1,24 @@
+apiVersion: 1
+
+datasources:
+  - name: Swift Quickwit Logs
+    uid: swift_quickwit_logs
+    type: quickwit-quickwit-datasource
+    access: proxy
+    url: http://quickwit:7280/api/v1
+    isDefault: false
+    jsonData:
+      index: swift-proxy-logs
+      logMessageField: message
+      logLevelField: status_class
+
+  - name: Swift Container Sync Object Logs
+    uid: swift_quickwit_container_sync_objects
+    type: quickwit-quickwit-datasource
+    access: proxy
+    url: http://quickwit:7280/api/v1
+    isDefault: false
+    jsonData:
+      index: swift-container-sync-objects
+      logMessageField: message
+      logLevelField: outcome

@@ -1,0 +1,14 @@
+[Unit]
+Description=Tail source Swift proxy logs into Quickwit
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/home/ubuntu/.ssh/<collector-key>.pem
+
+[Service]
+User=ubuntu
+ExecStart=/usr/bin/python3 /opt/swift-log-collector/swift_quickwit_collector.py --site source --ssh-host ubuntu@<source-swift-proxy> --ssh-key /home/ubuntu/.ssh/<collector-key>.pem --mode tail --quickwit-ingest-url http://127.0.0.1:7280/api/v1/swift-proxy-logs/ingest
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

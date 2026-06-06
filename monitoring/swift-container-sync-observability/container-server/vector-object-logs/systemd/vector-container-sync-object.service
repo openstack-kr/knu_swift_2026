@@ -1,0 +1,15 @@
+[Unit]
+Description=Vector collector for Swift container-sync object events
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/vector-container-sync-object
+ExecStart=/usr/bin/vector --config /etc/vector/container-sync-object.toml
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

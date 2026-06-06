@@ -1,0 +1,198 @@
+version: 0.8
+
+index_id: swift-container-sync-objects
+
+doc_mapping:
+  mode: dynamic
+  field_mappings:
+    - name: timestamp
+      type: datetime
+      input_formats:
+        - rfc3339
+      fast: true
+      fast_precision: seconds
+
+    - name: site
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: host
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: program
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: event_type
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: log_type
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: account
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: container
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: object
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: source_path
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: remote_container_path
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: remote_path
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: path
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: method
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: outcome
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: reason
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: status
+      type: u64
+      fast: true
+
+    - name: status_text
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: status_class
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: bytes
+      type: u64
+      fast: true
+
+    - name: bytes_sent
+      type: u64
+      fast: true
+
+    - name: object_bytes
+      type: u64
+      fast: true
+
+    - name: request_time
+      type: f64
+      fast: true
+
+    - name: duration_ms
+      type: f64
+      fast: true
+
+    - name: deleted
+      type: u64
+      fast: true
+
+
+    - name: sync_point1
+      type: u64
+      fast: true
+
+    - name: sync_point2
+      type: u64
+      fast: true
+
+    - name: max_row
+      type: u64
+      fast: true
+
+    - name: object_count
+      type: u64
+      fast: true
+
+    - name: replication_rate
+      type: f64
+      fast: true
+
+    - name: puts
+      type: u64
+      fast: true
+
+    - name: deletes
+      type: u64
+      fast: true
+
+    - name: time_exhausted
+      type: u64
+      fast: true
+
+    - name: transaction_id
+      type: text
+      tokenizer: raw
+      fast: true
+
+    - name: user_agent
+      type: text
+      tokenizer: default
+
+    - name: message
+      type: text
+      tokenizer: default
+      record: position
+      stored: true
+
+    - name: error_code
+      type: u64
+      fast: true
+
+  timestamp_field: timestamp
+
+search_settings:
+  default_search_fields:
+    - message
+    - account
+    - container
+    - object
+    - source_path
+    - remote_path
+    - path
+    - outcome
+    - reason
+
+indexing_settings:
+  commit_timeout_secs: 5
+
+retention:
+  period: 30 days

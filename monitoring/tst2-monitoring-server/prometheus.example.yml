@@ -1,0 +1,51 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+  external_labels:
+    monitor: 'swift-monitor'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['localhost:9093']
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  - job_name: 'prometheus'
+    scrape_interval: 5s
+    scrape_timeout: 5s
+    static_configs:
+      - targets:
+          - 'prometheus:9090'
+
+  - job_name: 'swift-container-sync'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - 'sync-lag-exporter:8000'
+
+  - job_name: 'swift-container-sync-recon'
+    scrape_interval: 15s
+    scrape_timeout: 5s
+    static_configs:
+      - targets:
+          - '<swift-container-node-1>:8010'
+          - '<swift-container-node-2>:8010'
+          - '<swift-container-node-3>:8010'
+
+  - job_name: 'monitoring-node'
+    static_configs:
+      - targets:
+          - 'host.docker.internal:9100'
+
+  - job_name: 'swift-nodes'
+    static_configs:
+      - targets:
+          - '<swift-node-1>:9100'
+          - '<swift-node-2>:9100'
+          - '<swift-node-3>:9100'
