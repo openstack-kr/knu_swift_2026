@@ -173,18 +173,18 @@ container_sync_hostname
 
 `container_sync_stats`에 들어간다.
 
-- PUT 성공 수
-- DELETE 성공 수
-- 전송 bytes
-- row attempt 수
-- row success 수
-- row failure 수
-- remote head skip 수
-- remote not found 수
-- remote conflict 수
-- client exception failure 수
-- unexpected failure 수
-- versioning symlink skip 수
+- syncs: sync 성공 container 수
+- skips: skip container 수
+- failures: failure container 수
+- attempted: scan된 container 수
+- time_exhausted: `container_time` 제한에 걸린 container 수
+- puts: PUT 성공 수
+- deletes: DELETE 성공 수
+- bytes: 전송 bytes
+- row_attempts: row attempt 수
+- row_successes: row success 수
+- row_failures: row failure 수
+- remote_head_skips: remote head skip 수
 
 ### container 단위 값
 

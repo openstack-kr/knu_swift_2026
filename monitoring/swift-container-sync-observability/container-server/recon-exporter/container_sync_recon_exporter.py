@@ -31,11 +31,6 @@ TOTAL_COUNTERS = {
     "row_successes": "Object rows completed successfully by container-sync.",
     "row_failures": "Object rows that failed during container-sync.",
     "remote_head_skips": "Rows skipped because the remote object was already current.",
-    "remote_not_founds": "DELETE rows where the remote object was already missing.",
-    "remote_conflicts": "DELETE rows that received a remote conflict response.",
-    "client_exception_failures": "Rows that failed with a Swift client exception.",
-    "unexpected_failures": "Rows that failed with an unexpected exception.",
-    "versioning_symlink_skips": "Rows skipped because they were versioning symlinks.",
 }
 
 DAEMON_GAUGES = {
@@ -930,7 +925,6 @@ def option_html(options, selected):
 
 def nav_html(active):
     links = [
-        ("/", "Overview", "overview"),
         ("/containers", "Containers", "containers"),
         ("/logs", "Object History", "logs"),
     ]
@@ -1077,170 +1071,7 @@ def status_class(status):
     return "muted"
 
 
-def render_html():
-    states = collect_state()
-    nodes_up = sum(1 for state in states if state["up"])
-    daemon_rows = []
-    total_new_backlog = 0
-    total_retry_backlog = 0
-    failed_containers = 0
 
-    cards = []
-    for state in states:
-        recon = state.get("container_sync", {}) or {}
-        daemon = recon.get("daemon", {}) or {}
-        total_new_backlog += number(daemon.get("new_backlog_rows"))
-        total_retry_backlog += number(daemon.get("retry_backlog_rows"))
-        failed_containers += number(daemon.get("failed_containers"))
-
-        update_age = age_text(recon.get("timestamp", 0)) if state["up"] else "n/a"
-        last_run = age_text(daemon.get("last_run_timestamp", 0))
-        cards.append('''
-        <section class="node-card %s">
-          <div class="node-head">
-            <h2>%s</h2>
-            <span>%s</span>
-          </div>
-          <dl>
-            <div><dt>Recon age</dt><dd>%s</dd></div>
-            <div><dt>Last run</dt><dd>%s</dd></div>
-            <div><dt>Scanned</dt><dd>%s</dd></div>
-            <div><dt>Synced</dt><dd>%s</dd></div>
-            <div><dt>Failed</dt><dd>%s</dd></div>
-          </dl>
-          <p class="path">%s</p>
-        </section>''' % (
-            "up" if state["up"] else "down",
-            h(state["node"]),
-            "up" if state["up"] else h(state["error"]),
-            h(update_age),
-            h(last_run),
-            h(fmt_int(daemon.get("scanned_containers", 0))),
-            h(fmt_int(daemon.get("synced_containers", 0))),
-            h(fmt_int(daemon.get("failed_containers", 0))),
-            h(state["path"])))
-
-        daemon_rows.append('''
-        <tr>
-          <td>%s</td>
-          <td><span class="pill %s">%s</span></td>
-          <td>%s</td>
-          <td>%s</td>
-          <td class="num">%s</td>
-          <td class="num">%s</td>
-          <td class="num">%s</td>
-          <td class="num">%s</td>
-          <td class="num">%s</td>
-          <td class="num">%s</td>
-          <td class="num">%s</td>
-          <td class="num">%s</td>
-        </tr>''' % (
-            h(state["node"]),
-            "ok" if state["up"] else "bad",
-            "up" if state["up"] else h(state["error"]),
-            h(update_age),
-            h(last_run),
-            h(fmt_int(daemon.get("last_run_duration_seconds", 0))),
-            h(fmt_int(daemon.get("scanned_containers", 0))),
-            h(fmt_int(daemon.get("synced_containers", 0))),
-            h(fmt_int(daemon.get("skipped_containers", 0))),
-            h(fmt_int(daemon.get("failed_containers", 0))),
-            h(fmt_int(daemon.get("new_backlog_rows", 0))),
-            h(fmt_int(daemon.get("retry_backlog_rows", 0))),
-            h(fmt_int(
-                number(daemon.get("max_new_backlog_rows")) +
-                number(daemon.get("max_retry_backlog_rows")))))
-        )
-
-    table_body = "\n".join(daemon_rows) if daemon_rows else '<tr><td colspan="12" class="empty">No recon state</td></tr>'
-
-    body = '''<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="%s">
-  <title>Container Sync Recon</title>
-  <style>
-    :root { color-scheme: light; --bg: #f6f8fb; --ink: #172033; --muted: #667085; --line: #d8dee8; --panel: #ffffff; --ok: #087443; --bad: #b42318; --warn: #b54708; --blue: #155eef; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    header { padding: 28px 32px 18px; border-bottom: 1px solid var(--line); background: #fff; }
-    h1 { margin: 0; font-size: 28px; font-weight: 720; letter-spacing: 0; }
-    .sub { margin-top: 6px; color: var(--muted); font-size: 14px; }
-    nav { margin-top: 12px; display: flex; gap: 14px; flex-wrap: wrap; }
-    nav a { color: var(--blue); text-decoration: none; font-weight: 650; font-size: 14px; }
-    nav a.active { color: var(--ink); }
-    main { padding: 24px 32px 36px; max-width: 1600px; margin: 0 auto; }
-    .summary { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
-    .summary-card, .node-card, .table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
-    .summary-card { padding: 16px; }
-    .summary-card span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-    .summary-card strong { display: block; margin-top: 8px; font-size: 28px; line-height: 1; }
-    .nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 18px; }
-    .node-card { padding: 16px; }
-    .node-card.down { border-color: #f1b8b2; }
-    .node-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
-    .node-head h2 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
-    .node-head span { color: var(--muted); font-size: 13px; }
-    .node-card.up .node-head span { color: var(--ok); }
-    .node-card.down .node-head span { color: var(--bad); }
-    dl { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 16px 0 0; }
-    dt { color: var(--muted); font-size: 12px; }
-    dd { margin: 4px 0 0; font-weight: 650; }
-    .path { margin: 14px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-    .table-wrap { overflow: auto; }
-    table { width: 100%%; border-collapse: collapse; min-width: 1120px; }
-    th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; vertical-align: middle; }
-    th { position: sticky; top: 0; background: #fbfcfe; color: #475467; font-weight: 680; }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .pill { display: inline-flex; align-items: center; height: 24px; padding: 0 9px; border-radius: 999px; font-weight: 680; font-size: 12px; }
-    .pill.ok { color: var(--ok); background: #dcfae6; }
-    .pill.bad { color: var(--bad); background: #fee4e2; }
-    .pill.warn { color: var(--warn); background: #fef0c7; }
-    .pill.muted { color: var(--muted); background: #eef2f6; }
-    .empty { text-align: center; color: var(--muted); padding: 28px; }
-    footer { color: var(--muted); font-size: 12px; margin-top: 12px; }
-    @media (max-width: 820px) { header, main { padding-left: 16px; padding-right: 16px; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Container Sync Recon</h1>
-    <div class="sub">Auto refresh: %ss.</div>
-    <nav>%s</nav>
-  </header>
-  <main>
-    <section class="summary">
-      <div class="summary-card"><span>Recon nodes up</span><strong>%s/%s</strong></div>
-      <div class="summary-card"><span>New backlog rows</span><strong>%s</strong></div>
-      <div class="summary-card"><span>Retry backlog rows</span><strong>%s</strong></div>
-      <div class="summary-card"><span>Failed containers</span><strong>%s</strong></div>
-    </section>
-    <section class="nodes">%s</section>
-    <section class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>Node</th><th>Status</th><th>Recon age</th><th>Last run</th><th>Duration s</th><th>Scanned</th><th>Synced</th><th>Skipped</th><th>Failed</th><th>New backlog</th><th>Retry backlog</th><th>Max backlog</th></tr>
-        </thead>
-        <tbody>%s</tbody>
-      </table>
-    </section>
-    <footer>/metrics exposes the same recon values for Prometheus. /api/state returns raw parsed state. Use <a href="/logs">Object History</a> for account/container/object lookup.</footer>
-  </main>
-</body>
-</html>''' % (
-        WEB_REFRESH_SECONDS,
-        WEB_REFRESH_SECONDS,
-        nav_html("overview"),
-        nodes_up,
-        len(states),
-        fmt_int(total_new_backlog),
-        fmt_int(total_retry_backlog),
-        fmt_int(failed_containers),
-        "\n".join(cards),
-        table_body)
-    return body
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -1264,8 +1095,7 @@ class Handler(BaseHTTPRequestHandler):
             self.write_response(200, "text/html; charset=utf-8",
                                 render_containers(params).encode("utf-8"))
         elif path in ("/", "/status"):
-            self.write_response(200, "text/html; charset=utf-8",
-                                render_html().encode("utf-8"))
+            self.write_redirect("/containers")
         elif path == "/healthz":
             self.write_response(200, "text/plain; charset=utf-8", b"ok\n")
         else:
@@ -1277,6 +1107,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def write_redirect(self, location):
+        body = b""
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
 
     def log_message(self, fmt, *args):
         return
