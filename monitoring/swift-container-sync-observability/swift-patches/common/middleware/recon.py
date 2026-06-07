@@ -150,14 +150,12 @@ class ReconMiddleware(object):
                                       self.container_recon_cache)
 
     def get_container_sync_info(self):
-        """get container-sync info"""
-        return self._from_recon_cache(["container_sync_time",
-                                       "container_sync_last",
-                                       "container_sync_stats",
-                                       "container_sync_daemon",
-                                       "container_sync_containers",
-                                       "container_sync_hostname"],
-                                      self.container_recon_cache)
+        """get container sync info"""
+        return self._from_recon_cache(
+            ['container_sync_stats',
+             'container_sync_sweep',
+             'container_sync_last'],
+            self.container_recon_cache)
 
     def get_replication_info(self, recon_type):
         """get replication info"""
@@ -413,10 +411,10 @@ class ReconMiddleware(object):
             content = self.get_driveaudit_error()
         elif rcheck == "time":
             content = self.get_time()
-        elif rcheck in ("container-sync", "container_sync"):
-            content = self.get_container_sync_info()
         elif rcheck == "sharding":
             content = self.get_sharding_info()
+        elif rcheck == "container-sync":
+            content = self.get_container_sync_info()
         elif rcheck == "relinker":
             content = self.get_relinker_info()
         elif rcheck == "reconstruction" and rtype == 'object':

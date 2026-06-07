@@ -1,0 +1,2159 @@
+{
+  "uid": "swift-container-sync-quickwit",
+  "title": "Swift Container Sync Quickwit",
+  "tags": [
+    "swift",
+    "container-sync",
+    "quickwit",
+    "vector"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 41,
+  "version": 26,
+  "refresh": "15s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "type": "custom",
+        "name": "host",
+        "label": "Node",
+        "query": "knu-src-cont1,knu-src-cont2,knu-src-cont3",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": "*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "*",
+          "selected": true
+        },
+        "options": [
+          {
+            "text": "All",
+            "value": "*",
+            "selected": true
+          },
+          {
+            "text": "knu-src-cont1",
+            "value": "knu-src-cont1",
+            "selected": false
+          },
+          {
+            "text": "knu-src-cont2",
+            "value": "knu-src-cont2",
+            "selected": false
+          },
+          {
+            "text": "knu-src-cont3",
+            "value": "knu-src-cont3",
+            "selected": false
+          }
+        ]
+      },
+      {
+        "type": "custom",
+        "name": "account",
+        "label": "Account",
+        "query": "AUTH_test",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": "*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "*",
+          "selected": true
+        },
+        "options": [
+          {
+            "text": "All",
+            "value": "*",
+            "selected": true
+          },
+          {
+            "text": "AUTH_test",
+            "value": "AUTH_test",
+            "selected": false
+          }
+        ]
+      },
+      {
+        "type": "custom",
+        "name": "container",
+        "label": "Container",
+        "query": "src-001,src-002,src-003,src-004,src-005,src-006,src-007,src-008,src-009,src-010",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": "*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "*",
+          "selected": true
+        },
+        "options": [
+          {
+            "text": "All",
+            "value": "*",
+            "selected": true
+          },
+          {
+            "text": "src-001",
+            "value": "src-001",
+            "selected": false
+          },
+          {
+            "text": "src-002",
+            "value": "src-002",
+            "selected": false
+          },
+          {
+            "text": "src-003",
+            "value": "src-003",
+            "selected": false
+          },
+          {
+            "text": "src-004",
+            "value": "src-004",
+            "selected": false
+          },
+          {
+            "text": "src-005",
+            "value": "src-005",
+            "selected": false
+          },
+          {
+            "text": "src-006",
+            "value": "src-006",
+            "selected": false
+          },
+          {
+            "text": "src-007",
+            "value": "src-007",
+            "selected": false
+          },
+          {
+            "text": "src-008",
+            "value": "src-008",
+            "selected": false
+          },
+          {
+            "text": "src-009",
+            "value": "src-009",
+            "selected": false
+          },
+          {
+            "text": "src-010",
+            "value": "src-010",
+            "selected": false
+          }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Overview",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": [],
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Object 이벤트 수",
+      "description": "선택한 범위에서 발생한 object 단위 sync 이벤트 수",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "showPercentChange": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "PUT 성공 수",
+      "description": "선택한 범위에서 성공한 PUT 복제 수",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "showPercentChange": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND outcome:success AND method:PUT AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "DELETE 성공 수",
+      "description": "선택한 범위에서 성공한 DELETE 복제 수",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "showPercentChange": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND outcome:success AND method:DELETE AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Failure 수",
+      "description": "선택한 범위에서 실패한 object sync 이벤트 수",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "showPercentChange": false
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND outcome:failure AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "type": "row",
+      "title": "Node 처리량",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "collapsed": false,
+      "panels": [],
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      }
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "노드별 PUT 처리량",
+      "description": "어느 노드가 PUT을 많이 처리하는지 시간 흐름으로 확인",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND outcome:success AND method:PUT AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "host",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "3",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "노드별 DELETE 처리량",
+      "description": "DELETE 급증이나 특정 노드 편차를 확인",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND outcome:success AND method:DELETE AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "host",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "3",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "노드별 Sync 지연 시간(ms)",
+      "description": "노드별 object 처리 평균 지연 시간",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "duration_ms"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "host",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "3",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 106,
+      "type": "row",
+      "title": "Account 추이",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "collapsed": false,
+      "panels": [],
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Account별 PUT/DELETE 처리량",
+      "description": "선택한 host/container 범위에서 이벤트 수가 많은 account의 PUT/DELETE 성공 수 변화를 시계열로 확인. Legend는 account + method 조합으로 표시.",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "width": 300
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND outcome:success AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "account",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "method",
+              "settings": {
+                "size": "5",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "4",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 102,
+      "type": "row",
+      "title": "Failure 분석",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "collapsed": false,
+      "panels": [],
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Failure 원인별 추이",
+      "description": "선택한 Node/Account/Container 범위에서 failure 원인이 시간에 따라 어떻게 늘어나는지 확인.",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "width": 300
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND outcome:failure AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "reason",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "3",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "노드별 Failure 원인",
+      "description": "선택한 Node/Account/Container 범위에서 failure가 많이 발생한 노드와 원인을 집계해서 확인. 시간 흐름은 Failure 원인별 추이 패널에서 확인.",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false,
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Node"
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reason"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Reason"
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.width",
+                "value": 220
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Count"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Count"
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 10
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "timestamp"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "enablePagination": false,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Count"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND outcome:failure AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "host",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "reason",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ],
+      "transformations": []
+    },
+    {
+      "id": 103,
+      "type": "row",
+      "title": "Container 추이",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "collapsed": false,
+      "panels": [],
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "컨테이너별 PUT 처리량",
+      "description": "선택한 host/account 범위에서 PUT 이벤트 수가 많은 container를 시계열로 확인. Legend는 container + host 조합으로 표시.",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "width": 300
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND outcome:success AND method:PUT AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "container",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "host",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "4",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "컨테이너별 DELETE 처리량",
+      "description": "선택한 host/account 범위에서 DELETE 이벤트 수가 많은 container를 시계열로 확인. Legend는 container + host 조합으로 표시.",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": false,
+            "insertNulls": false,
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "width": 300
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_object AND outcome:success AND method:DELETE AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "container",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "host",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "4",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 104,
+      "type": "row",
+      "title": "Container 진행률",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "collapsed": false,
+      "panels": [],
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "컨테이너별 Progress",
+      "description": "선택한 Node/Account 범위에서 report 이벤트가 많은 container의 progress_percent 변화를 확인. Legend는 container 기준으로 표시.",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 58
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "barAlignment": 0,
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "spanNulls": true,
+            "insertNulls": false,
+            "showPoints": "auto",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisBorderShow": false,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "axisCenteredZero": false,
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "width": 300
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_report AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "progress_percent"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "container",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "4",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "컨테이너 Row 현황",
+      "description": "최근 container_sync_report 기준 row 처리 상태. 상세 이력은 Web/object search 쪽에서 drill-down.",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "복제율 %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 50
+                    },
+                    {
+                      "color": "green",
+                      "value": 100
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "progress_percent"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 50
+                    },
+                    {
+                      "color": "green",
+                      "value": 100
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_report AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "logs",
+              "settings": {
+                "limit": "80",
+                "sortDirection": "desc"
+              }
+            }
+          ],
+          "bucketAggs": [],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "timestamp",
+                "host",
+                "container",
+                "progress_percent",
+                "total_rows",
+                "sync_point1",
+                "sync_point2"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "timestamp": 0,
+              "host": 1,
+              "container": 2,
+              "progress_percent": 3,
+              "total_rows": 4,
+              "sync_point1": 5,
+              "sync_point2": 6
+            },
+            "renameByName": {
+              "timestamp": "시간",
+              "host": "노드",
+              "container": "Container",
+              "progress_percent": "복제율 %",
+              "total_rows": "전체 Row",
+              "sync_point1": "SP1",
+              "sync_point2": "SP2"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 105,
+      "type": "row",
+      "title": "Details",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 75
+      },
+      "collapsed": false,
+      "panels": [],
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "진행 중/실패 컨테이너",
+      "description": "started 이후 종료되지 않았거나 실패한 container 확인",
+      "datasource": {
+        "type": "quickwit-quickwit-datasource",
+        "uid": "swift_container_sync_quickwit"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 76
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "상태"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "started": {
+                        "text": "started",
+                        "color": "blue",
+                        "index": 0
+                      },
+                      "finished": {
+                        "text": "finished",
+                        "color": "green",
+                        "index": 1
+                      },
+                      "failed": {
+                        "text": "failed",
+                        "color": "red",
+                        "index": 2
+                      },
+                      "skipped": {
+                        "text": "skipped",
+                        "color": "yellow",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.textColor",
+                "value": "white"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "state"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "started": {
+                        "text": "started",
+                        "color": "blue",
+                        "index": 0
+                      },
+                      "finished": {
+                        "text": "finished",
+                        "color": "green",
+                        "index": 1
+                      },
+                      "failed": {
+                        "text": "failed",
+                        "color": "red",
+                        "index": 2
+                      },
+                      "skipped": {
+                        "text": "skipped",
+                        "color": "yellow",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.textColor",
+                "value": "white"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "사유"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "exception": {
+                        "text": "exception",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "unauthorized": {
+                        "text": "unauthorized",
+                        "color": "red",
+                        "index": 1
+                      },
+                      "not_found": {
+                        "text": "not_found",
+                        "color": "yellow",
+                        "index": 2
+                      },
+                      "client_error": {
+                        "text": "client_error",
+                        "color": "orange",
+                        "index": 3
+                      },
+                      "remote_current": {
+                        "text": "remote_current",
+                        "color": "blue",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "reason"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "exception": {
+                        "text": "exception",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "unauthorized": {
+                        "text": "unauthorized",
+                        "color": "red",
+                        "index": 1
+                      },
+                      "not_found": {
+                        "text": "not_found",
+                        "color": "yellow",
+                        "index": 2
+                      },
+                      "client_error": {
+                        "text": "client_error",
+                        "color": "orange",
+                        "index": 3
+                      },
+                      "remote_current": {
+                        "text": "remote_current",
+                        "color": "blue",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "event_type:container_sync_state AND (state:started OR state:failed) AND host:${host:raw} AND account:${account:raw} AND container:${container:raw} AND NOT host:knu-tst1",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "logs",
+              "settings": {
+                "limit": "80",
+                "sortDirection": "desc"
+              }
+            }
+          ],
+          "bucketAggs": [],
+          "datasource": {
+            "type": "quickwit-quickwit-datasource",
+            "uid": "swift_container_sync_quickwit"
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "timestamp",
+                "host",
+                "account",
+                "container",
+                "state",
+                "reason"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "timestamp": 0,
+              "host": 1,
+              "account": 2,
+              "container": 3,
+              "state": 4,
+              "reason": 5
+            },
+            "renameByName": {
+              "timestamp": "시간",
+              "host": "노드",
+              "account": "Account",
+              "container": "Container",
+              "state": "상태",
+              "reason": "사유"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

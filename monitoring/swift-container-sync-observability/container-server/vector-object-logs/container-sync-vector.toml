@@ -1,0 +1,42 @@
+[sources.container_sync_log]
+type = "file"
+include = ["/var/log/swift/container-sync.log"]
+read_from = "end"
+
+[transforms.container_sync_events]
+type = "filter"
+inputs = ["container_sync_log"]
+condition = 'contains(string!(.message), "container-sync-event ")'
+
+[transforms.parse_container_sync_events]
+type = "remap"
+inputs = ["container_sync_events"]
+source = '''
+message = string!(.message)
+log_timestamp = .timestamp
+json_text = replace(message, r'.*container-sync-event ', "")
+event = parse_json!(json_text)
+
+. = merge!(., event)
+.host = get_hostname!()
+.source_log = "container-sync"
+if exists(event.timestamp) {
+    .event_timestamp = event.timestamp
+    .timestamp = from_unix_timestamp!(to_int!(event.timestamp))
+} else {
+    .timestamp = log_timestamp
+}
+'''
+
+[sinks.quickwit_container_sync]
+type = "http"
+inputs = ["parse_container_sync_events"]
+uri = "http://192.168.0.105:7280/api/v1/swift-container-sync-events/ingest"
+method = "post"
+encoding.codec = "json"
+framing.method = "newline_delimited"
+compression = "none"
+
+[sinks.quickwit_container_sync.batch]
+max_events = 100
+timeout_secs = 5
