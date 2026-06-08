@@ -478,9 +478,9 @@ class ContainerSync(Daemon):
         stats = dict(self.recon_totals)
         stats.update({
             'attempted': self.recon_scan.get('scanned_containers', 0),
-            'success': self.recon_scan.get('synced_containers', 0),
-            'failure': self.recon_scan.get('failed_containers', 0),
-            'skipped': self.recon_scan.get('skipped_containers', 0),
+            'syncs': self.recon_scan.get('synced_containers', 0),
+            'failures': self.recon_scan.get('failed_containers', 0),
+            'skips': self.recon_scan.get('skipped_containers', 0),
             'time_exhausted': self.recon_scan.get(
                 'time_exhausted_containers', 0),
         })
@@ -897,6 +897,23 @@ class ContainerSync(Daemon):
         self.logger.info('container-sync-object-event %s',
                          json.dumps(event, sort_keys=True))
 
+    def _client_exception_reason(self, err):
+        if err.http_status == HTTP_UNAUTHORIZED:
+            return 'unauthorized'
+        if err.http_status == HTTP_NOT_FOUND:
+            return 'not_found'
+        if err.http_status == HTTP_CONFLICT:
+            return 'conflict'
+        try:
+            status_class = int(err.http_status) // 100
+        except (TypeError, ValueError):
+            return 'client_exception'
+        if status_class == 4:
+            return 'client_error'
+        if status_class == 5:
+            return 'server_error'
+        return 'client_exception'
+
     def _update_sync_to_headers(self, name, sync_to, user_key,
                                 realm, realm_key, method, headers):
         """
@@ -993,6 +1010,7 @@ class ContainerSync(Daemon):
             allowed_sync_hosts way of syncing.
         :returns: True on success
         """
+        failure_reason = 'unexpected_exception'
         try:
             start_time = time()
             if self.recon_enabled:
@@ -1006,6 +1024,7 @@ class ContainerSync(Daemon):
                 delete_status = 0
                 delete_reason = ''
                 try:
+                    failure_reason = 'remote_delete_failed'
                     headers = {'x-timestamp': ts_data.internal}
                     self._update_sync_to_headers(row['name'], sync_to,
                                                  user_key, realm, realm_key,
@@ -1018,12 +1037,8 @@ class ContainerSync(Daemon):
                     delete_status = err.http_status
                     if err.http_status == HTTP_NOT_FOUND:
                         delete_reason = 'remote_not_found'
-                        if self.recon_enabled:
-                            self.recon_totals['remote_not_founds'] += 1
                     elif err.http_status == HTTP_CONFLICT:
                         delete_reason = 'remote_conflict'
-                        if self.recon_enabled:
-                            self.recon_totals['remote_conflicts'] += 1
                     if err.http_status not in (
                             HTTP_NOT_FOUND, HTTP_CONFLICT):
                         raise
@@ -1059,6 +1074,7 @@ class ContainerSync(Daemon):
                                'X-Backend-Storage-Policy-Index':
                                str(info['storage_policy_index'])}
                 try:
+                    failure_reason = 'source_get_failed'
                     source_obj_status, headers, body = \
                         self.swift.get_object(info['account'],
                                               info['container'], row['name'],
@@ -1082,14 +1098,15 @@ class ContainerSync(Daemon):
                         row, info, sync_to, 'PUT', 'skipped', start_time,
                         reason='versioning_symlink')
                     if self.recon_enabled:
-                        self.recon_totals['versioning_symlink_skips'] += 1
                         self.recon_totals['row_successes'] += 1
                     return True
 
                 timestamp = Timestamp(
                     headers.get('x-timestamp', Timestamp.zero()))
                 if timestamp < ts_meta:
+                    failure_reason = 'source_timestamp_older_than_row'
                     if exc:
+                        failure_reason = 'source_get_failed'
                         raise exc
                     raise Exception(
                         'Unknown exception trying to GET: '
@@ -1105,6 +1122,7 @@ class ContainerSync(Daemon):
                 if 'content-type' in headers:
                     headers['content-type'] = clean_content_type(
                         headers['content-type'])
+                failure_reason = 'remote_put_failed'
                 self._update_sync_to_headers(row['name'], sync_to, user_key,
                                              realm, realm_key, 'PUT', headers)
                 put_object(sync_to, name=row['name'], headers=headers,
@@ -1141,11 +1159,7 @@ class ContainerSync(Daemon):
                 self.logger.exception(
                     'ERROR Syncing %(db_file)s %(row)s',
                     {'db_file': str(broker), 'row': row})
-            reason = 'client_exception'
-            if err.http_status == HTTP_UNAUTHORIZED:
-                reason = 'unauthorized'
-            elif err.http_status == HTTP_NOT_FOUND:
-                reason = 'not_found'
+            reason = self._client_exception_reason(err)
             self._log_object_sync_event(
                 row, info, sync_to, 'DELETE' if row['deleted'] else 'PUT',
                 'failure', start_time, http_status=err.http_status,
@@ -1154,7 +1168,6 @@ class ContainerSync(Daemon):
             self.logger.increment('failures')
             if self.recon_enabled:
                 self.recon_totals['row_failures'] += 1
-                self.recon_totals['client_exception_failures'] += 1
             return False
         except (Exception, Timeout):
             self.logger.exception(
@@ -1162,12 +1175,11 @@ class ContainerSync(Daemon):
                 {'db_file': str(broker), 'row': row})
             self._log_object_sync_event(
                 row, info, sync_to, 'DELETE' if row['deleted'] else 'PUT',
-                'failure', start_time, reason='unexpected_exception')
+                'failure', start_time, reason=failure_reason)
             self.container_failures += 1
             self.logger.increment('failures')
             if self.recon_enabled:
                 self.recon_totals['row_failures'] += 1
-                self.recon_totals['unexpected_failures'] += 1
             return False
         return True
 

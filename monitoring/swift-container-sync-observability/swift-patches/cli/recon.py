@@ -719,8 +719,8 @@ class SwiftRecon(object):
             set([('127.0.0.1', 6221), ('127.0.0.2', 6231)])
         """
         stats = {'container_sync_time': [],
-                 'attempted': [], 'failure': [], 'success': [],
-                 'skipped': [], 'time_exhausted': []}
+                 'attempted': [], 'failures': [], 'syncs': [],
+                 'skips': [], 'time_exhausted': []}
         last_stats = []
         recon = Scout("container-sync", self.verbose,
                       self.suppress_errors, self.timeout)
@@ -743,8 +743,8 @@ class SwiftRecon(object):
                 stats['container_sync_time'].append(
                     response.get('container_sync_time', 0))
                 sync_stats = response.get('container_sync_stats') or {}
-                for stat_key in ['attempted', 'failure', 'success',
-                                 'skipped', 'time_exhausted']:
+                for stat_key in ['attempted', 'failures', 'syncs',
+                                 'skips', 'time_exhausted']:
                     stats[stat_key].append(sync_stats.get(stat_key))
                 last_stats.append((url, response.get('container_sync_last', 0)))
 
