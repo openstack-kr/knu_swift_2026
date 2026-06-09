@@ -1,7 +1,7 @@
 # Swift Monitoring
 
-이 디렉터리는 OpenStack Swift 운영 상태를 관측하기 위한 구성 파일을 모아 둔 곳입니다.
-현재 구성의 중심은 **Container Sync 관측**입니다. 운영자는 별도 웹 화면에서 현재 상태와 object 이력을 검색하고, Grafana에서는 Prometheus에 쌓인 시계열 지표를 시간 흐름으로 확인합니다.
+현재 디렉터리는 OpenStack Swift 운영 상태를 관측하기 위한 구성 파일을 모아 둔 곳입니다.
+모니터링 대상은 **Container Sync daemon**입니다. 운영자는 별도 웹 화면에서 현재 상태와 Container, object 이력을 검색하고, Grafana에서는 Prometheus에 쌓인 시계열 지표를 시간 흐름으로 확인할 수 있습니다.
 
 ## 역할 구분
 
@@ -16,37 +16,37 @@
 
 ## 관측 웹에서 확인 가능한 지표
 
-관측 웹은 `container-sync-recon-exporter`가 제공하는 화면입니다. 기본 접속 위치는 monitoring server 기준 `http://<monitoring-server>:8010/`입니다.
+웹은 `container-sync-recon-exporter`가 제공하는 화면으로, 기본 접속 위치는 `http://<monitoring-server>:8010/`입니다.
 
 | 화면 | 지표/필드 | 의미 | 주 사용 상황 |
 | --- | --- | --- | --- |
-| Overview | Recon nodes up | recon 값을 정상적으로 읽은 container node 수 | 특정 node의 exporter 또는 Swift recon API가 죽었는지 확인 |
-| Overview | New backlog rows | `max_row - sync_point1` 기준, 아직 새 row 영역에서 scan되지 않은 row 수 | 새 object 변경분이 밀리고 있는지 확인 |
-| Overview | Retry backlog rows | `sync_point1 - sync_point2` 기준, retry 확인 구간에 남은 row 수 | 이전 cycle에서 전 노드 확인이 끝나지 않은 row가 남았는지 확인 |
-| Overview | Failed containers | 마지막 sync 상태가 failure인 container 수 | 장애 또는 원격지 통신 실패 감지 |
-| Overview | Node status | node별 `up/down/not_found/error` 상태 | node 단위 recon 수집 상태 확인 |
-| Overview | Recon age | 마지막 recon 갱신 후 지난 시간 | daemon이 최근에 실제 작업했는지 확인 |
-| Overview | Last run | 마지막 container-sync 실행 시각 | 실행 주기가 멈췄는지 확인 |
-| Overview | Duration s | 마지막 실행 소요 시간 | run 시간이 갑자기 길어졌는지 확인 |
-| Overview | Scanned / Synced / Skipped / Failed | 마지막 scan에서 처리한 container 수 | daemon cycle이 정상적으로 container를 훑는지 확인 |
-| Overview | Max backlog | node가 관측한 container backlog 최대값 | 어느 node에 backlog가 몰리는지 빠르게 확인 |
+| Containers | Account / Container filter | 특정 account/container로 목록 필터링 | 특정 고객/account/container 조회 |
+| Containers | Max events | Quickwit에서 요약에 사용할 최근 event 최대 개수 | 최근 event 기준 집계 범위 조정 |
+| Containers | recon containers | recon에서 수집된 container 개수 | recon 데이터가 들어오는지 빠르게 확인 |
+| Containers | container events / object events | Quickwit에서 조회된 container/object event 수 | 로그 적재와 검색 상태 확인 |
+| Containers | PUT / DELETE Trend | 최근 object event의 `PUT`, `DELETE` 추이 | 복제 작업과 삭제 작업의 최근 흐름 확인 |
+| Containers | Container Row / Object Trend | container event의 `max_row`, `object_count` 추이 | row 증가와 object 개수 변화를 빠르게 확인 |
 | Containers | Account / Container | sync 대상 container 식별자 | 특정 고객/account/container 조회 |
 | Containers | Replication | `sync_point2 / max_row` 기준 검증 완료 비율 | container가 보수적으로 어디까지 복제 확인됐는지 확인 |
 | Containers | Total objects/rows | object 수 또는 container DB row 수 | container 규모 확인 |
 | Containers | New backlog / Retry backlog | container별 backlog row 수 | 어떤 container가 지연을 만드는지 확인 |
 | Containers | Failures | 해당 container 관련 실패 event 수 | 실패가 특정 container에 집중되는지 확인 |
-| Containers | Error rate | object/container event 대비 실패 비율 | 장애 주입, 네트워크 drop 등으로 오류율이 상승하는지 확인 |
+| Containers | Error rate | object event 대비 실패 비율 | 장애 주입, 네트워크 drop 등으로 오류율이 상승하는지 확인 |
 | Containers | Nodes | 해당 container를 보고한 node 목록 | 어떤 replica node가 처리했는지 확인 |
-| Containers | Details | object history 검색으로 이어지는 링크 | container 상세 이력으로 이동 |
-| Object History | Account / Container / Object 검색 | Quickwit에 적재된 object event 조회 | 특정 object가 언제 복제됐는지 검색 |
+| Containers | Last seen | 마지막 event 또는 recon 갱신 시각 | 해당 container가 최근에 처리됐는지 확인 |
+| Containers | Details | failure로 필터링된 Object History 링크 | container별 실패 event 상세로 이동 |
+| Containers | Node / Failures / Events / Error rate | node별 object event 실패 비율 | 실패가 특정 node에 몰리는지 확인 |
+| Containers | Recent failure table | 최근 failure event의 timestamp, host, account, container, reason, object | 최근 실패 원인을 빠르게 확인 |
+| Object History | Quickwit query | Quickwit query 문자열 직접 입력 | `object:a.txt OR outcome:failure` 같은 조건 검색 |
+| Object History | Account / Container / Object 검색 | Quickwit에 적재된 event 조회 | 특정 object가 언제 복제됐는지 검색 |
 | Object History | Method | `PUT`, `DELETE`, `HEAD` 등 처리 method | 실제 전송인지, 삭제인지, remote-current skip인지 구분 |
 | Object History | Outcome | `success`, `failure`, `skipped` | object 처리 결과 확인 |
 | Object History | Reason | 실패 또는 skip 사유 | 원격지 404/409, client exception, versioning skip 등 원인 확인 |
-| Object History | Host / Node | event를 남긴 container node | 어느 node가 처리했는지 추적 |
-| Object History | Timestamp / Duration | 처리 시각과 소요 시간 | 언제 복제됐고 느렸는지 확인 |
-| Object History | Row id / Bytes | container DB row와 전송 byte | row 진행 상황과 전송량 확인 |
+| Object History | Host / Site / Path | event를 남긴 container node, site, log path | 어느 node와 수집 경로에서 나온 event인지 추적 |
+| Object History | Timestamp / Duration ms | 처리 시각과 소요 시간 | 언제 복제됐고 느렸는지 확인 |
+| Object History | Max hits | 화면에 표시할 검색 결과 최대 개수 | 큰 로그 검색의 응답량 제한 |
 
-웹 화면은 “지금 운영자가 무엇을 찾아야 하는가”에 맞춰져 있습니다. 특정 account/container/object를 바로 넣어 검색하거나, 실패율이 높은 container에서 object history로 내려가는 흐름을 의도했습니다.
+웹 화면은 `Containers`와 `Object History` 두 화면으로 구성됩니다. 루트(`/`)와 `/status`는 `/containers`로 이동하며, node별 recon freshness, daemon last run, scanned/synced/skipped/failed 같은 운영 지표는 웹 테이블이 아니라 `/api/state`, `/metrics`, Grafana에서 확인합니다. 특정 account/container/object를 바로 넣어 검색하거나, 실패율이 높은 container에서 object history로 내려가는 흐름을 의도했습니다.
 
 ## Sync Lag Exporter 지표
 
@@ -99,7 +99,7 @@ Grafana는 alert rule과도 연결하기 좋습니다. 예를 들어 `Row Failur
 
 ## 시계열 데이터 처리 흐름
 
-시계열 데이터는 recon 값을 Prometheus metric으로 바꿔 저장하는 흐름입니다. Container Sync daemon은 Prometheus로 직접 전송하지 않고, Swift 관례에 맞게 recon cache 파일에 값을 남깁니다.
+시계열 데이터는 recon 값을 Prometheus metric으로 바꿔 저장하는 흐름으로 수집됩니다.
 
 ```text
 container-sync daemon
@@ -136,11 +136,11 @@ sync-lag-exporter
   -> Grafana dashboard
 ```
 
-이 흐름은 “source에 있는 object가 replica에도 실제로 존재하는가”, “남은 미동기화 object가 얼마나 오래됐는가” 같은 결과 검증 질문에 답합니다.
+수집된 리콘 값을 통해 “source에 있는 object가 replica에도 실제로 존재하는가”, “남은 미동기화 object가 얼마나 오래됐는가” 같은 복제 결과를 검증할 수 있습니다.
 
 ## 로그 관련 처리 흐름
 
-로그 흐름은 object/container 단위 event를 검색하기 위한 흐름입니다. Recon이 집계 지표라면, Quickwit 로그는 “특정 object가 실제로 언제 어떻게 처리됐는가”를 찾기 위한 원장에 가깝습니다.
+로그 흐름은 object/container 단위 event를 검색하기 위한 흐름입니다. Recon이 집계 지표라면, Quickwit 로그는 “특정 object가 실제로 언제 어떻게 처리됐는가”를 찾기 위한 데이터입니다.
 
 ```text
 container-sync daemon
@@ -163,7 +163,7 @@ container-sync daemon
 | 6. Quickwit ingest | monitoring server | `swift-container-sync-objects` index에 event document를 저장합니다. |
 | 7. 검색 | monitoring server | 웹의 Object History 또는 Quickwit/Grafana datasource에서 account/container/object 기준으로 검색합니다. |
 
-이 흐름은 “이 object가 복제된 적 있는가”, “어느 node에서 실패했는가”, “장애 시점에 어떤 object들이 실패했는가” 같은 검색 질문에 답합니다.
+로그 데이터는 “이 object가 복제된 적 있는가”, “어느 node에서 실패했는가”, “장애 시점에 어떤 object들이 실패했는가” 와 같은 특정 오브젝트 복제 이력의 정보를 얻고자 할 때 용이합니다.
 
 ## 주요 접속 위치
 
@@ -195,8 +195,8 @@ container-sync daemon
 
 ## 운영자가 보는 기준
 
-- 현재 상태와 상세 검색은 **Container Sync Recon Web**에서 봅니다.
-- 시간 흐름, 처리율, backlog 추세, 알림 후보는 **Grafana**에서 봅니다.
-- source와 replica의 실제 object 차이는 **Sync Lag Exporter 지표**에서 봅니다.
-- 특정 object/account/container의 복제 이력과 실패 원인은 **Quickwit 기반 Object History**에서 봅니다.
-- process가 살아 있는지만 보는 것은 충분하지 않습니다. recon age, last run, backlog, failure rate, unsynced object, lag seconds를 함께 봐야 실제 sync가 정상인지 판단할 수 있습니다.
+- 현재 상태와 상세 검색: **Container Sync Recon Web**
+- 시간 흐름, 처리율, backlog 추세, 알림 후보: **Grafana**
+- source와 replica의 실제 object 차이: **Sync Lag Exporter 지표**
+- 특정 object/account/container의 복제 이력과 실패 원인: **Quickwit 기반 Object History**
+- recon age, last run, backlog, failure rate, unsynced object, lag seconds등의 정보를 통해 실제 sync가 정상인지 판단하는 기준으로 활용 가능
