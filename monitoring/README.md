@@ -8,10 +8,11 @@
 | 도구 | 주 용도 | 확인하는 데이터 |
 | --- | --- | --- |
 | Container Sync Recon Web | 운영자가 바로 보는 현재 상태와 검색 화면 | recon 상태, container 진행률, object/container event 검색 |
-| Prometheus | exporter가 노출하는 metric 저장 | `swift_container_sync_recon_*` 시계열 metric |
-| Grafana | Prometheus/Quickwit 데이터를 시각화 | backlog, 실패율, 처리율, recon age, 처리 시간 추이 |
+| Prometheus | exporter가 노출하는 metric 저장 | `swift_container_sync_recon_*`, `swift_container_sync_*` 시계열 metric |
+| Grafana | Prometheus/Quickwit 데이터를 시각화 | backlog, 실패율, 처리율, recon age, 처리 시간, 실제 sync lag 추이 |
 | Quickwit | 로그 검색 엔진 | object 단위 복제 이력, 실패 사유, container event |
 | Vector | container node의 로그 수집기 | `/var/log/swift/container-sync.log` tail 및 Quickwit ingest |
+| Sync Lag Exporter | source/replica container를 직접 비교하는 exporter | 미동기화 object 수, mismatch 수, lag seconds, scrape 성공 여부 |
 
 ## 관측 웹에서 확인 가능한 지표
 
@@ -47,6 +48,26 @@
 
 웹 화면은 “지금 운영자가 무엇을 찾아야 하는가”에 맞춰져 있습니다. 특정 account/container/object를 바로 넣어 검색하거나, 실패율이 높은 container에서 object history로 내려가는 흐름을 의도했습니다.
 
+## Sync Lag Exporter 지표
+
+`sync-lag-exporter`는 recon 값만 보지 않고 Swift API로 source container와 replica container의 object 목록을 직접 비교합니다. recon 지표가 daemon의 처리 상태를 보여 준다면, lag 지표는 "복제가 실제 결과물까지 맞춰졌는가"를 확인하는 보조 지표입니다.
+
+| metric | 의미 | 주 사용 상황 |
+| --- | --- | --- |
+| `swift_container_sync_lag_seconds` | replica에 없거나 hash/size가 다른 source object의 age. `p50`, `p95`, `max` quantile label 제공 | 오래 밀린 object가 남아 있는지 확인 |
+| `swift_container_sync_unsynced_objects` | source에는 있지만 replica에는 없거나 최신 상태가 아닌 object 수 | 실제 미복제 object 수 확인 |
+| `swift_container_sync_mismatch_objects` | source와 replica 양쪽에 있지만 hash 또는 size가 다른 object 수 | 부분 전송, 덮어쓰기, 불일치 여부 확인 |
+| `swift_container_sync_source_objects` | source container에서 확인한 object 수 | 비교 대상 규모 확인 |
+| `swift_container_sync_replica_objects` | replica container에서 확인한 object 수 | replica 쪽 object 수 확인 |
+| `swift_container_sync_last_scrape_success` | container별 마지막 비교 scrape 성공 여부 | 인증, 네트워크, Swift API 오류 감지 |
+| `swift_container_sync_last_scrape_timestamp_seconds` | 마지막 비교 scrape 시각 | 비교 지표가 최근 값인지 확인 |
+| `swift_container_sync_configured` | exporter 필수 설정 존재 여부 | exporter 설정 누락 확인 |
+| `swift_container_sync_containers` | 비교 대상으로 잡힌 source/replica container pair 수 | 자동 발견 또는 수동 설정 결과 확인 |
+| `swift_container_sync_checked_objects` | 전체 source object 확인 수 | 전체 비교 작업량 확인 |
+| `swift_container_sync_unsynced_ratio` | 전체 source object 중 미동기화 또는 mismatch object 비율 | 테스트 시나리오나 장애 상황의 복제 완료율 확인 |
+
+container pair는 `SYNC_CONTAINERS`로 직접 지정하거나, source container의 `X-Container-Sync-To` 값을 읽어 자동 발견할 수 있습니다. 집계 값은 `container="all"` label로 함께 노출됩니다.
+
 ## Grafana에서 확인 가능한 지표
 
 Grafana dashboard는 `http://<monitoring-server>:3000/d/swift_container_sync/swift-container-sync`에서 확인합니다. Grafana는 순간 조회보다 시간 흐름과 추세를 보는 데 적합합니다.
@@ -67,10 +88,14 @@ Grafana dashboard는 `http://<monitoring-server>:3000/d/swift_container_sync/swi
 | Container Scan Results | scanned/synced/skipped/failed by node | container scan 결과 | sync 대상이 아닌 container가 많거나 실패가 많은지 확인 |
 | Bytes Sent Rate | `rate(swift_container_sync_recon_bytes_total[5m])` | 원격지로 전송한 byte 처리율 | 대용량 object sync 부하 확인 |
 | Recon Age by Node | `time() - last_update_timestamp` | node별 recon freshness | 값이 계속 증가하면 daemon/exporter 갱신 중단 의심 |
+| Unsynced Objects | `swift_container_sync_unsynced_objects` | source에는 있지만 replica에는 아직 맞춰지지 않은 object 수 | 복제가 실제 결과까지 완료됐는지 확인 |
+| Mismatch Objects | `swift_container_sync_mismatch_objects` | source/replica의 hash 또는 size가 다른 object 수 | 데이터 불일치가 남았는지 확인 |
+| Sync Lag Seconds | `swift_container_sync_lag_seconds` | 미동기화 object age의 p50/p95/max | 오래된 미복제 object가 계속 남는지 확인 |
+| Unsynced Ratio | `swift_container_sync_unsynced_ratio` | 전체 source object 대비 미동기화/mismatch 비율 | 부하 테스트 중 복제 수렴 정도 확인 |
 | Top Container Backlog | container별 max backlog 상위 | backlog가 큰 account/container 목록 | 운영자가 우선 확인할 container 선정 |
 | Object History Web Link | 웹 링크 패널 | Grafana에서 object 검색 웹으로 이동 | 상세 검색은 웹/Quickwit에서 수행 |
 
-Grafana는 alert rule과도 연결하기 좋습니다. 예를 들어 `Row Failure Rate > 0`, `Recon Age` 급증, `Failed Sync Containers > 0`, `Retry Backlog Rows` 지속 증가 같은 조건을 알림 후보로 볼 수 있습니다.
+Grafana는 alert rule과도 연결하기 좋습니다. 예를 들어 `Row Failure Rate > 0`, `Recon Age` 급증, `Failed Sync Containers > 0`, `Retry Backlog Rows` 지속 증가, `Unsynced Objects` 또는 `Sync Lag Seconds` 지속 증가 같은 조건을 알림 후보로 볼 수 있습니다.
 
 ## 시계열 데이터 처리 흐름
 
@@ -98,6 +123,20 @@ container-sync daemon
 | 6. 시각화 | monitoring server | Grafana가 Prometheus query로 backlog, 실패율, 처리율, recon age를 그립니다. |
 
 이 흐름은 “몇 개가 처리됐는가”, “얼마나 밀렸는가”, “최근에 daemon이 돌았는가” 같은 수치 질문에 답합니다.
+
+실제 복제 결과 비교가 필요한 경우에는 별도 exporter가 Swift API를 조회합니다.
+
+```text
+sync-lag-exporter
+  -> source Swift API object listing
+  -> replica Swift API object listing
+  -> object hash/size/timestamp 비교
+  -> /metrics
+  -> Prometheus scrape
+  -> Grafana dashboard
+```
+
+이 흐름은 “source에 있는 object가 replica에도 실제로 존재하는가”, “남은 미동기화 object가 얼마나 오래됐는가” 같은 결과 검증 질문에 답합니다.
 
 ## 로그 관련 처리 흐름
 
@@ -136,6 +175,7 @@ container-sync daemon
 | Recon JSON API | `http://<monitoring-server>:8010/api/state` |
 | Object log JSON API | `http://<monitoring-server>:8010/api/object-logs?q=object:<object-name>` |
 | Node exporter metrics | `http://<container-node>:8010/metrics` |
+| Sync lag metrics | Prometheus scrape target `sync-lag-exporter:8000/metrics` |
 | Grafana Container Sync Dashboard | `http://<monitoring-server>:3000/d/swift_container_sync/swift-container-sync` |
 | Quickwit API | `http://<monitoring-server>:7280/api/v1` |
 
@@ -146,6 +186,7 @@ container-sync daemon
 | `monitoring/swift-container-sync-observability/` | Container Sync 관측성 제출/배포 묶음 |
 | `monitoring/swift-container-sync-observability/swift-patches/container/sync.py` | recon 기록과 object/container event log가 추가된 container-sync 패치 |
 | `monitoring/tst2-monitoring-server/container-sync-recon-exporter/` | recon API를 읽어 웹 화면과 `/metrics`를 제공하는 exporter |
+| `monitoring/tst2-monitoring-server/sync-lag-exporter/` | source/replica container object 목록을 비교해 실제 sync lag metric을 제공하는 exporter |
 | `monitoring/tst2-monitoring-server/grafana/dashboards/swift-container-sync.json` | Grafana Container Sync dashboard |
 | `monitoring/tst2-monitoring-server/prometheus.example.yml` | Prometheus scrape job 예시 |
 | `monitoring/container-sync-object-vector/` | container-sync object/container event 로그를 Quickwit으로 보내는 Vector 구성 |
@@ -156,5 +197,6 @@ container-sync daemon
 
 - 현재 상태와 상세 검색은 **Container Sync Recon Web**에서 봅니다.
 - 시간 흐름, 처리율, backlog 추세, 알림 후보는 **Grafana**에서 봅니다.
+- source와 replica의 실제 object 차이는 **Sync Lag Exporter 지표**에서 봅니다.
 - 특정 object/account/container의 복제 이력과 실패 원인은 **Quickwit 기반 Object History**에서 봅니다.
-- process가 살아 있는지만 보는 것은 충분하지 않습니다. recon age, last run, backlog, failure rate를 함께 봐야 실제 sync가 정상인지 판단할 수 있습니다.
+- process가 살아 있는지만 보는 것은 충분하지 않습니다. recon age, last run, backlog, failure rate, unsynced object, lag seconds를 함께 봐야 실제 sync가 정상인지 판단할 수 있습니다.
