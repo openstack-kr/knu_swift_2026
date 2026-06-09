@@ -50,7 +50,7 @@
 
 ## Sync Lag Exporter 지표
 
-`sync-lag-exporter`는 recon 값만 보지 않고 Swift API로 source container와 replica container의 object 목록을 직접 비교합니다. recon 지표가 daemon의 처리 상태를 보여 준다면, lag 지표는 "복제가 실제 결과물까지 맞춰졌는가"를 확인하는 보조 지표입니다.
+`sync-lag-exporter`는 recon 값만 보지 않고 Swift API로 source container와 replica container의 object 목록을 직접 비교해 Prometheus metric을 노출합니다. recon 지표가 daemon의 처리 상태를 보여 준다면, lag 지표는 "복제가 실제 결과물까지 맞춰졌는가"를 Prometheus에서 확인하는 보조 지표입니다.
 
 | metric | 의미 | 주 사용 상황 |
 | --- | --- | --- |
@@ -145,7 +145,7 @@ sync-lag-exporter
   -> replica Swift API object listing
   -> object hash/size/timestamp 비교
   -> /metrics
-  -> Prometheus scrape/query
+  -> Prometheus scrape
 ```
 
 sync-lag metric을 통해 “source에 있는 object가 replica에도 실제로 존재하는가”, “남은 미동기화 object가 얼마나 오래됐는가” 같은 복제 결과를 검증할 수 있습니다.
