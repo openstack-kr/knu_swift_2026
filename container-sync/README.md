@@ -1,8 +1,14 @@
-# container-sync
+# container-sync 개선 알고리즘
 
 OpenStack Swift의 `swift/container/sync.py` 개선 작업입니다.
 **최종본은 [`patch2/sync.py`](patch2/sync.py)** 이며, 원본 및 중간 단계와
 나란히 비교할 수 있도록 보관합니다.
+
+## 시스템 구성도
+<img width="1280" height="661" alt="object storage (16)" src="https://github.com/user-attachments/assets/bd6ca70a-c634-4366-8f3b-10dcd432baf1" />
+
+## 액티비티 다이어그램
+<img width="459" height="487" alt="스크린샷 2026-06-10 오후 3 54 43" src="https://github.com/user-attachments/assets/784ca99d-d0ed-43d7-b46e-6609c5a6af0d" />
 
 ## 파일 구성
 
