@@ -3,6 +3,9 @@
 현재 디렉터리는 OpenStack Swift 운영 상태를 관측하기 위한 구성 파일을 모아 둔 곳입니다.
 모니터링 대상은 **Container Sync daemon**입니다. 운영자는 별도 웹 화면에서 현재 상태와 Container, object 이력을 검색하고, Grafana에서는 Prometheus metric과 Quickwit event log를 시간 흐름으로 시각화해 확인할 수 있습니다.
 
+## 시스템 구성도
+<img width="1160" height="358" alt="모니터링_시스템구성도" src="https://github.com/user-attachments/assets/629bdba5-dee4-441a-ac11-9cc8211e7bf6" />
+
 ## 역할 구분
 
 | 도구 | 주 용도 | 확인하는 데이터 |
