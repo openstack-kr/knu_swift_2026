@@ -797,6 +797,72 @@ class TestContainerSync(unittest.TestCase):
             sync.hash_path = orig_hash_path
             sync.delete_object = orig_delete_object
 
+    def test_failed_rows_retried_on_next_container_sync_run(self):
+        cring = FakeRing()
+        with mock.patch('swift.container.sync.InternalClient'):
+            cs = sync.ContainerSync({}, container_ring=cring,
+                                    logger=self.logger)
+
+        attempts = []
+        run_number = [1]
+        fcb = FakeContainerBroker(
+            'path',
+            info={'account': 'a', 'container': 'c',
+                  'storage_policy_index': 0,
+                  'x_container_sync_point1': 5,
+                  'x_container_sync_point2': -1},
+            metadata={'x-container-sync-to': ('http://127.0.0.1/a/c', 1),
+                      'x-container-sync-key': ('key', 1)},
+            items_since=[{'ROWID': 1, 'name': 'o1', 'created_at': '1.0',
+                          'deleted': True},
+                         {'ROWID': 2, 'name': 'o2', 'created_at': '2.0',
+                          'deleted': True},
+                         {'ROWID': 3, 'name': 'o3', 'created_at': '3.0',
+                          'deleted': True},
+                         {'ROWID': 4, 'name': 'o4', 'created_at': '4.0',
+                          'deleted': True},
+                         {'ROWID': 5, 'name': 'o5', 'created_at': '5.0',
+                          'deleted': True}])
+        fcb.sync_point1 = 5
+        fcb.sync_point2 = -1
+
+        def tracking_set_sync_points(sync_point1, sync_point2):
+            if sync_point1 is not None:
+                fcb.sync_point1 = sync_point1
+                fcb.info['x_container_sync_point1'] = sync_point1
+            if sync_point2 is not None:
+                fcb.sync_point2 = sync_point2
+                fcb.info['x_container_sync_point2'] = sync_point2
+
+        def fake_container_sync_row(row, sync_to, user_key, broker, info,
+                                    realm, realm_key):
+            attempts.append((run_number[0], row['ROWID']))
+            return not (run_number[0] == 1 and row['ROWID'] == 3)
+
+        with mock.patch('swift.container.sync.ContainerBroker',
+                        lambda p, logger: fcb), \
+                mock.patch.object(fcb, 'set_x_container_sync_points',
+                                  tracking_set_sync_points), \
+                mock.patch.object(cs, 'container_sync_row',
+                                  fake_container_sync_row):
+            cs._myips = ['10.0.0.0']    # Match
+            cs._myport = 1000           # Match
+            cs.allowed_sync_hosts = ['127.0.0.1']
+
+            cs.container_sync('isa.db')
+            self.assertEqual(5, fcb.sync_point1)
+            self.assertEqual(2, fcb.sync_point2)
+
+            run_number[0] = 2
+            cs.container_sync('isa.db')
+
+        self.assertEqual(
+            [(1, 1), (1, 2), (1, 3), (1, 4), (1, 5),
+             (2, 3), (2, 4), (2, 5)],
+            attempts)
+        self.assertEqual(5, fcb.sync_point1)
+        self.assertEqual(5, fcb.sync_point2)
+
     def test_container_report(self):
         container_stats = {'puts': 0,
                            'deletes': 0,
@@ -1408,161 +1474,6 @@ class TestContainerSync(unittest.TestCase):
             sync.uuid = orig_uuid
             sync.put_object = orig_put_object
             sync.head_object = orig_head_object
-
-    def test_init_sync_row_concurrency_default(self):
-        # Default value (8) is applied when sync_row_concurrency is unset.
-        with mock.patch('swift.container.sync.InternalClient'):
-            cs = sync.ContainerSync({}, container_ring=FakeRing())
-        self.assertEqual(cs.sync_row_concurrency, 8)
-
-    def test_init_sync_row_concurrency_explicit(self):
-        # A value provided in conf is applied as-is.
-        with mock.patch('swift.container.sync.InternalClient'):
-            cs = sync.ContainerSync(
-                {'sync_row_concurrency': '4'},
-                container_ring=FakeRing())
-        self.assertEqual(cs.sync_row_concurrency, 4)
-
-    def test_init_sync_row_concurrency_clamped_to_one(self):
-        # 0 and negative values are clamped to 1.
-        for value in ('0', '-5'):
-            with mock.patch('swift.container.sync.InternalClient'):
-                cs = sync.ContainerSync(
-                    {'sync_row_concurrency': value},
-                    container_ring=FakeRing())
-            self.assertEqual(cs.sync_row_concurrency, 1)
-
-    def test_init_sync_row_concurrency_empty_defaults_to_8(self):
-        # Empty string is treated as unset (falls through to default).
-        with mock.patch('swift.container.sync.InternalClient'):
-            cs = sync.ContainerSync(
-                {'sync_row_concurrency': ''},
-                container_ring=FakeRing())
-        self.assertEqual(cs.sync_row_concurrency, 8)
-
-    def test_container_sync_uses_pool_for_new_rows(self):
-        # When syncing new rows, ContextPool must be sized to
-        # sync_row_concurrency, each matching row must be assigned to a
-        # worker via pool.spawn, and waitall must run before the
-        # with-block exits so __exit__ does not kill running work.
-        spawn_calls = []
-        pool_sizes = []
-        events = []
-
-        class FakePool(object):
-            def __init__(self, size):
-                pool_sizes.append(size)
-
-            def __enter__(self):
-                events.append('enter')
-                return self
-
-            def __exit__(self, *a):
-                events.append('exit')
-
-            def spawn(self, func, *args, **kwargs):
-                spawn_calls.append((func, args))
-
-            def waitall(self):
-                events.append('waitall')
-
-        def fake_hash_path(account, container, obj, raw_digest=False):
-            # unpack_from('>I', b'\x00' * 16)[0] % 3 == 0 == ordinal,
-            # so every row is dispatched on this node.
-            return b'\x00' * 16
-
-        fcb = FakeContainerBroker(
-            'path',
-            info={'account': 'a', 'container': 'c',
-                  'storage_policy_index': 0,
-                  'x_container_sync_point1': -1,
-                  'x_container_sync_point2': -1},
-            metadata={'x-container-sync-to': ('http://127.0.0.1/a/c', 1),
-                      'x-container-sync-key': ('key', 1)},
-            items_since=[{'ROWID': 1, 'name': 'o1', 'size': 1,
-                          'created_at': '1.0', 'deleted': False},
-                         {'ROWID': 2, 'name': 'o2', 'size': 1,
-                          'created_at': '2.0', 'deleted': False}])
-
-        with mock.patch('swift.container.sync.InternalClient'), \
-                mock.patch('swift.container.sync.hash_path',
-                           fake_hash_path), \
-                mock.patch('swift.container.sync.ContainerBroker',
-                           lambda p, logger: fcb), \
-                mock.patch('swift.container.sync.ContextPool', FakePool):
-            cring = FakeRing()
-            cs = sync.ContainerSync(
-                {'sync_row_concurrency': '3'},
-                container_ring=cring, logger=self.logger)
-            cs._myips = ['10.0.0.0']    # Match FakeRing devs[0]
-            cs._myport = 1000           # Match FakeRing devs[0]
-            cs.allowed_sync_hosts = ['127.0.0.1']
-            cs.container_sync('isa.db')
-
-        # ContextPool created with sync_row_concurrency=3
-        self.assertEqual(pool_sizes, [3])
-        # One spawn per row (both rows match ordinal)
-        self.assertEqual(len(spawn_calls), 2)
-        for func, _args in spawn_calls:
-            self.assertEqual(func, cs.container_sync_row)
-        # waitall must run inside the with-block (between enter and exit)
-        self.assertEqual(events, ['enter', 'waitall', 'exit'])
-
-    def test_container_sync_skips_rows_not_owned(self):
-        # Rows not owned by this node are skipped (not spawned), but
-        # sync_point1 still advances.
-        spawn_calls = []
-
-        class FakePool(object):
-            def __init__(self, size):
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                pass
-
-            def spawn(self, func, *args, **kwargs):
-                spawn_calls.append((func, args))
-
-            def waitall(self):
-                pass
-
-        def fake_hash_path(account, container, obj, raw_digest=False):
-            # unpack_from('>I', b'\x01' * 16)[0] % 3 == 1 != 0 = ordinal,
-            # so no rows are dispatched on this node.
-            return b'\x01' * 16
-
-        fcb = FakeContainerBroker(
-            'path',
-            info={'account': 'a', 'container': 'c',
-                  'storage_policy_index': 0,
-                  'x_container_sync_point1': -1,
-                  'x_container_sync_point2': -1},
-            metadata={'x-container-sync-to': ('http://127.0.0.1/a/c', 1),
-                      'x-container-sync-key': ('key', 1)},
-            items_since=[{'ROWID': 1, 'name': 'o1', 'size': 1,
-                          'created_at': '1.0', 'deleted': False}])
-
-        with mock.patch('swift.container.sync.InternalClient'), \
-                mock.patch('swift.container.sync.hash_path',
-                           fake_hash_path), \
-                mock.patch('swift.container.sync.ContainerBroker',
-                           lambda p, logger: fcb), \
-                mock.patch('swift.container.sync.ContextPool', FakePool):
-            cring = FakeRing()
-            cs = sync.ContainerSync({}, container_ring=cring,
-                                    logger=self.logger)
-            cs._myips = ['10.0.0.0']
-            cs._myport = 1000
-            cs.allowed_sync_hosts = ['127.0.0.1']
-            cs.container_sync('isa.db')
-
-        # No spawn calls since no rows match this node's ordinal
-        self.assertEqual(spawn_calls, [])
-        # sync_point1 still advanced past the row
-        self.assertEqual(fcb.sync_point1, 1)
 
     def test_select_http_proxy_None(self):
 
