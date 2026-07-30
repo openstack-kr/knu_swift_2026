@@ -202,8 +202,8 @@ class ContainerSync(Daemon):
         swift.common.db.DB_PREALLOCATION = \
             config_true_value(conf.get('db_preallocation', 'f'))
         self.conn_timeout = float(conf.get('conn_timeout', 5))
-        self.sync_row_concurrency = max(
-            1, int(conf.get('sync_row_concurrency') or 8))
+        self.sync_row_concurrency = int(
+            conf.get('sync_row_concurrency') or 8)
         request_tries = int(conf.get('request_tries') or 3)
 
         internal_client_conf_path = conf.get('internal_client_conf_path')
