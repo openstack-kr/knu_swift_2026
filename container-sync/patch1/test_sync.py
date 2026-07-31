@@ -798,7 +798,7 @@ class TestContainerSync(unittest.TestCase):
             sync.delete_object = orig_delete_object
 
     def test_container_second_loop_spawns_new_rows(self):
-        # Verifies that new rows in the second loop are dispatched via pool.spawn().
+        # Verifies that new rows in the second loop dispatch via pool.spawn().
         cring = FakeRing()
         with mock.patch('swift.container.sync.InternalClient'):
             cs = sync.ContainerSync({}, container_ring=cring,
@@ -826,6 +826,7 @@ class TestContainerSync(unittest.TestCase):
 
         fcb = FakeContainerBroker(
             'path',
+            # Equal sync points skip the first loop.
             info={'account': 'a', 'container': 'c',
                   'storage_policy_index': 0,
                   'x_container_sync_point1': -1,
@@ -836,15 +837,15 @@ class TestContainerSync(unittest.TestCase):
                          {'ROWID': 2, 'name': 'o2'},
                          {'ROWID': 3, 'name': 'o3'}])
 
+        # unpack_from('>I', b'\x00' * 16)[0] == 0, so every row maps
+        # to ordinal 0 and is dispatched via pool.spawn().
         with mock.patch('swift.container.sync.ContainerBroker',
                         lambda p, logger: fcb), \
                 mock.patch('swift.container.sync.ContextPool', FakePool), \
-                # unpack_from('>I', b'\x00' * 16)[0] == 0, so every row maps
-                # to ordinal 0 and is dispatched via pool.spawn().
                 mock.patch('swift.container.sync.hash_path',
                            lambda *args, **kwargs: b'\x00' * 16):
-            cs._myips = ['10.0.0.0'] # Match
-            cs._myport = 1000 # Match
+            cs._myips = ['10.0.0.0']  # Match
+            cs._myport = 1000  # Match
             cs.allowed_sync_hosts = ['127.0.0.1']
             cs.container_sync('isa.db')
 
@@ -903,8 +904,8 @@ class TestContainerSync(unittest.TestCase):
                                   tracking_set_sync_points), \
                 mock.patch.object(cs, 'container_sync_row',
                                   fake_container_sync_row):
-            cs._myips = ['10.0.0.0'] # Match
-            cs._myport = 1000 # Match
+            cs._myips = ['10.0.0.0']  # Match
+            cs._myport = 1000  # Match
             cs.allowed_sync_hosts = ['127.0.0.1']
 
             cs.container_sync('isa.db')
